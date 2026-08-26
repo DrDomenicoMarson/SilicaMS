@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "SilicaMS"
+dynamic = ["version"]
+description = "Build periodic amorphous and functionalized silica models for molecular simulation"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+  {name = "Domenico Marson"},
+  {name = "Hamzeh Kraus"},
+  {name = "Marc Högler"},
+]
+maintainers = [
+  {name = "Domenico Marson"},
+]
+dependencies = [
+  "numpy",
+  "scipy",
+  "numba",
+  "matplotlib",
+  "pandas",
+  "seaborn",
+  "pyyaml",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest",
+  "pytest-cov",
+]
+docs = [
+  "sphinx>=9",
+  "numpydoc",
+]
+dev = [
+  "ruff",
+  "wheel",
+]
+
+[project.scripts]
+silicams-fill-slit = "silicams.slit_fill:_fill_slit_console_main"
+silicams-slit-density = "silicams.slit_fill:_estimate_guest_density_console_main"
+
+[project.urls]
+Homepage = "https://github.com/DrDomenicoMarson/SilicaMS"
+Documentation = "https://drdomenicomarson.github.io/SilicaMS/"
+Issues = "https://github.com/DrDomenicoMarson/SilicaMS/issues"
+Repository = "https://github.com/DrDomenicoMarson/SilicaMS"
+"Original PoreMS project" = "https://github.com/PoreMS/PoreMS"
+
+[tool.setuptools.dynamic]
+version = {attr = "silicams._version.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["silicams", "silicams.*"]
+
+[tool.setuptools.package-data]
+silicams = ["templates/*", "py.typed"]
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

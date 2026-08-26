@@ -1,18 +1,23 @@
 from dataclasses import asdict, dataclass, replace
+import importlib.util
 import inspect
 import json
 import os
 from pathlib import Path
+import tomllib
 
 import pytest
 import yaml
 
-import porems as pms
-import porems.slit as slit_mod
-import porems.writers.common as store_mod
-from porems.pore import Pore
-import porems.topology as topo_mod
-from porems._version import __version__ as EXPECTED_VERSION
+import silicams as sms
+import silicams.generic as generic
+import silicams.geometry as geometry
+import silicams.slit as slit_mod
+import silicams.utils as utils
+import silicams.writers.common as snapshot_mod
+from silicams.connectivity import AssembledStructureGraph, ConnectivityValidationReport
+import silicams.topology as topo_mod
+from silicams._version import __version__ as EXPECTED_VERSION
 
 
 def experimental_target_from_surface(surface_target, alpha, alpha_override=None):
@@ -33,7 +38,7 @@ def experimental_target_from_surface(surface_target, alpha, alpha_override=None)
         Experimental all-silicon target that maps back to ``surface_target``
         when the same alpha value is applied.
     """
-    return pms.ExperimentalSiliconStateTarget(
+    return sms.ExperimentalSiliconStateTarget(
         q2_fraction=alpha * surface_target.q2_fraction,
         q3_fraction=alpha * surface_target.q3_fraction,
         q4_fraction=alpha * surface_target.q4_fraction + (1.0 - alpha),
@@ -44,8 +49,8 @@ def experimental_target_from_surface(surface_target, alpha, alpha_override=None)
 
 
 def test_topology_parameter_helpers_are_exported_from_package_root():
-    assert pms.GromacsAngleParameters is topo_mod.GromacsAngleParameters
-    assert pms.GromacsBondParameters is topo_mod.GromacsBondParameters
+    assert sms.GromacsAngleParameters is topo_mod.GromacsAngleParameters
+    assert sms.GromacsBondParameters is topo_mod.GromacsBondParameters
 
 
 @pytest.mark.parametrize(
@@ -60,16 +65,37 @@ def test_topology_parameter_helpers_are_exported_from_package_root():
         "PoreAmorphCylinder",
     ),
 )
-def test_legacy_domain_and_writer_symbols_are_not_public(symbol):
-    assert not hasattr(pms, symbol)
+def test_removed_domain_and_writer_symbols_are_not_public(symbol):
+    assert not hasattr(sms, symbol)
 
 
-def test_legacy_modules_and_generated_documentation_are_absent():
-    assert not Path("porems/system.py").exists()
-    assert not Path("porems/store.py").exists()
-    assert not Path("docsrc/pore.rst").exists()
-    assert not list(Path("docsrc/generated").glob("porems.system.*"))
-    assert not list(Path("docsrc/generated").glob("porems.store.*"))
+def test_removed_modules_and_generated_documentation_are_absent():
+    assert importlib.util.find_spec("porems") is None
+    assert not Path("silicams/system.py").exists()
+    assert not Path("silicams/store.py").exists()
+    assert not Path("silicams/pore.py").exists()
+    assert Path("silicams/_silica_engine.py").exists()
+    assert not Path("fill_pore").exists()
+    assert not Path("setup.py").exists()
+    assert not Path("docs/generated").exists()
+    assert not Path("docs/pore.rst").exists()
+
+
+def test_removed_writer_name_has_no_compatibility_alias():
+    assert hasattr(sms.GromacsTopologyWriter, "write_helper_topology")
+    assert not hasattr(sms.GromacsTopologyWriter, "write_legacy_topology")
+
+
+def test_only_silicams_cli_entry_points_are_packaged():
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+
+    assert project["scripts"] == {
+        "silicams-fill-slit": "silicams.slit_fill:_fill_slit_console_main",
+        "silicams-slit-density": (
+            "silicams.slit_fill:_estimate_guest_density_console_main"
+        ),
+    }
+    assert not any(name.startswith("porems-") for name in project["scripts"])
 
 
 @dataclass(frozen=True)
@@ -132,7 +158,7 @@ def graph_without_bond(graph, atom_a, atom_b):
         for bond in graph.bonds
         if (bond.atom_a, bond.atom_b) != bond_key
     ]
-    return pms.AssembledStructureGraph.from_bonds(graph.atom_ids, filtered_bonds)
+    return AssembledStructureGraph.from_bonds(graph.atom_ids, filtered_bonds)
 
 
 def teps_ligand(repo_root):
@@ -148,19 +174,19 @@ def teps_ligand(repo_root):
     ligand : Molecule
         TEPS ligand loaded from the checked-in PDB fixture.
     """
-    teps_path = Path(repo_root) / "scripts" / "TEPS.pdb"
-    return pms.Molecule("TEPS", "TEPS", str(teps_path))
+    teps_path = Path(repo_root) / "tests" / "data" / "TEPS.pdb"
+    return sms.Molecule("TEPS", "TEPS", str(teps_path))
 
 
 def bundled_tms_template_path():
-    """Return the checked-in legacy TMS flat topology path.
+    """Return the checked-in TMS flat-topology template path.
 
     Returns
     -------
     itp_path : Path
-        Package path to the legacy checked-in TMS flat topology bundle.
+        Package path to the checked-in TMS flat-topology template.
     """
-    return Path(pms.__file__).resolve().parent / "templates" / "tms_slit.itp"
+    return Path(sms.__file__).resolve().parent / "templates" / "tms_slit.itp"
 
 
 def explicit_tms_geminal_cross_terms():
@@ -172,14 +198,14 @@ def explicit_tms_geminal_cross_terms():
         Deterministic geminal cross terms used by the functionalized export
         tests.
     """
-    return pms.SilaneGeminalCrossTerms(
+    return sms.SilaneGeminalCrossTerms(
         first_ligand_atom_name="O1",
         geminal_oxygen_mount_ligand_angle=topo_mod.GromacsAngleParameters.harmonic(
             angle_deg=117.65432,
             force_constant=432.123456,
         ),
         geminal_dihedrals=(
-            pms.GeminalMountDihedralSpec(
+            sms.GeminalMountDihedralSpec(
                 fourth_atom_name="Si2",
                 function=1,
                 parameters=("12.34567", "0.98765", "2"),
@@ -192,7 +218,6 @@ def explicit_tms_topology_config(
     tmp_path,
     total_charge=0.825,
     include_geminal_terms=True,
-    junction_parameters=None,
     source_itp_path=None,
 ):
     """Return an explicit TMS topology config for full-slab export tests.
@@ -206,12 +231,9 @@ def explicit_tms_topology_config(
     include_geminal_terms : bool, optional
         True to include explicit generated geminal cross terms on the returned
         config.
-    junction_parameters : SlitJunctionParameters or None, optional
-        Optional explicit legacy junction-parameter override carried by the
-        returned topology config.
     source_itp_path : Path or None, optional
         Optional explicit source ``.itp`` path. When omitted, the checked-in
-        legacy TMS bundle is used as the source text.
+        TMS template is used as the source text.
 
     Returns
     -------
@@ -259,9 +281,7 @@ def explicit_tms_topology_config(
             else None
         ),
     }
-    if junction_parameters is not None:
-        topology_kwargs["junction_parameters"] = junction_parameters
-    return pms.SilaneTopologyConfig(**topology_kwargs)
+    return sms.SilaneTopologyConfig(**topology_kwargs)
 
 
 def cif_loop_rows(cif_text, first_tag):
@@ -383,7 +403,7 @@ def naive_bridge_clearance(kit, pair, bridge_position, local_only):
         if any(abs(component) > slit_mod._BRIDGE_STERIC_DISTANCE_CUTOFF_NM for component in delta):
             continue
 
-        clearance = pms.geom.length(delta) - min_distance
+        clearance = geometry.length(delta) - min_distance
         if clearance < min_clearance:
             min_clearance = clearance
             if min_clearance < 0:
@@ -436,53 +456,6 @@ def _bare_slit_case_context(request, bare_slit_context):
     request.cls.stored_report = bare_slit_context.stored_report
 
 
-class TestSurfacePreparationValidation:
-    def test_prepare_removes_orphan_oxygen_from_active_matrix(self):
-        mol = pms.Molecule("orphan_oxygen")
-        mol.add("O", [0.0, 0.0, 0.0], name="OM1")
-        matrix = pms.Matrix([[0, []]])
-        pore = Pore(mol, matrix)
-
-        pore.prepare()
-
-        assert 0 not in matrix.get_matrix()
-        assert pore.get_surface_preparation_diagnostics().removed_orphan_oxygen == 1
-
-    def test_prepare_removes_invalid_oxygen_connectivity(self):
-        mol = pms.Molecule("invalid_oxygen")
-        mol.add("O", [0.0, 0.0, 0.0], name="OM1")
-        mol.add("H", [0.1, 0.0, 0.0], name="H1")
-        matrix = pms.Matrix([[0, [1]]])
-        pore = Pore(mol, matrix)
-
-        pore.prepare()
-
-        assert 0 not in matrix.get_matrix()
-        assert pore.get_surface_preparation_diagnostics().removed_invalid_oxygen == 1
-
-    def test_objectify_accepts_only_valid_framework_oxygen(self):
-        valid = pms.Molecule("valid_framework_oxygen")
-        valid.add("O", [0.0, 0.0, 0.0], name="OM1")
-        valid.add("Si", [0.16, 0.0, 0.0], name="SI1")
-        valid.add("Si", [-0.16, 0.0, 0.0], name="SI2")
-        valid_matrix = pms.Matrix([[0, [1, 2]]])
-        valid_pore = Pore(valid, valid_matrix)
-
-        mols = valid_pore.objectify([0])
-
-        assert len(mols) == 1
-        assert mols[0].get_short() == "OM"
-
-        invalid = pms.Molecule("invalid_framework_oxygen")
-        invalid.add("O", [0.0, 0.0, 0.0], name="OM1")
-        invalid.add("Si", [0.16, 0.0, 0.0], name="SI1")
-        invalid_matrix = pms.Matrix([[0, [1]]])
-        invalid_pore = Pore(invalid, invalid_matrix)
-
-        with pytest.raises(ValueError):
-            invalid_pore.objectify([0])
-
-
 @pytest.mark.usefixtures("_bare_slit_case_context")
 class TestAmorphousSlitPreparation:
     @staticmethod
@@ -503,10 +476,10 @@ class TestAmorphousSlitPreparation:
 
     def test_periodic_slit_geometry(self):
         assert self.prepared_report.site_ex == 0
-        assert isinstance(self.prepared_result.system, pms.SilicaSlit)
+        assert isinstance(self.prepared_result.system, sms.SilicaSlit)
         assert isinstance(
             next(iter(self.prepared_result.system.binding_sites.values())),
-            pms.SlitBindingSite,
+            sms.SlitBindingSite,
         )
 
         expected_box = [9.605, 19.210, 9.605]
@@ -518,11 +491,11 @@ class TestAmorphousSlitPreparation:
         assert self.prepared_report.siloxane_distance_range_nm == (0.4, 0.65)
 
     def test_default_silica_topology_returns_independent_copies_with_provenance(self):
-        model_a = pms.default_silica_topology()
-        model_b = pms.default_silica_topology()
+        model_a = sms.default_silica_topology()
+        model_b = sms.default_silica_topology()
 
-        assert isinstance(model_a, pms.SilicaTopologyModel)
-        assert isinstance(model_b, pms.SilicaTopologyModel)
+        assert isinstance(model_a, sms.SilicaTopologyModel)
+        assert isinstance(model_b, sms.SilicaTopologyModel)
         assert model_a is not model_b
         assert model_a.bond_terms.framework_si_o is not model_b.bond_terms.framework_si_o
 
@@ -534,22 +507,8 @@ class TestAmorphousSlitPreparation:
         assert model_b.angle_terms.graft_scaffold_si_scaffold_o_mount.angle_deg == pytest.approx(149.0)
         assert model_b.angle_terms.graft_oxygen_mount_oxygen.angle_deg == pytest.approx(109.5)
 
-    def test_default_legacy_slit_junction_parameters_match_default_silica_model(self):
-        model = pms.default_silica_topology()
-        junctions = pms.SlitJunctionParameters()
-
-        assert junctions.mount_scaffold_bond.parameters == (
-            model.bond_terms.graft_mount_scaffold_si_o.to_gromacs_parameters().parameters
-        )
-        assert junctions.scaffold_si_scaffold_o_mount_angle.parameters == (
-            model.angle_terms.graft_scaffold_si_scaffold_o_mount.to_gromacs_parameters().parameters
-        )
-        assert junctions.oxygen_mount_oxygen_angle.parameters == (
-            model.angle_terms.graft_oxygen_mount_oxygen.to_gromacs_parameters().parameters
-        )
-
     def test_silica_topology_serialization_helpers_return_readable_structures(self):
-        model = pms.default_silica_topology()
+        model = sms.default_silica_topology()
 
         dict_data = model.to_dict()
         json_data = json.loads(model.to_json())
@@ -562,10 +521,10 @@ class TestAmorphousSlitPreparation:
         assert yaml_data == dict_data
 
     def test_bare_results_expose_resolved_silica_topology(self):
-        assert isinstance(self.prepared_result.silica_topology, pms.SilicaTopologyModel)
-        assert isinstance(self.stored_result.silica_topology, pms.SilicaTopologyModel)
+        assert isinstance(self.prepared_result.silica_topology, sms.SilicaTopologyModel)
+        assert isinstance(self.stored_result.silica_topology, sms.SilicaTopologyModel)
         assert self.prepared_result.bare_charge_diagnostics is None
-        assert isinstance(self.stored_result.bare_charge_diagnostics, pms.BareSilicaChargeDiagnostics)
+        assert isinstance(self.stored_result.bare_charge_diagnostics, sms.BareSilicaChargeDiagnostics)
         assert self.prepared_result.silica_topology.bond_terms.framework_si_o.force_constant == pytest.approx(119244.0)
 
     def test_bare_charge_diagnostics_match_surface_roles_and_are_neutral(self):
@@ -586,7 +545,7 @@ class TestAmorphousSlitPreparation:
         assert diagnostics.geminal_hydrogen.atom_count == 2 * self.stored_report.final_surface.q2_sites
 
     def test_gromacs_writer_bare_charge_diagnostics_matches_stored_result(self):
-        diagnostics = pms.GromacsTopologyWriter(
+        diagnostics = sms.GromacsTopologyWriter(
             self.stored_result.system.export_snapshot(),
         ).bare_charge_diagnostics(
             silica_topology=self.stored_result.silica_topology,
@@ -622,7 +581,7 @@ class TestAmorphousSlitPreparation:
         assert self.prepared_report.surface_fraction_tolerance == pytest.approx(0.005, abs=1e-7)
         assert self.prepared_report.alpha_auto == pytest.approx(expected_alpha_auto, abs=10 ** (-(8)))
         assert self.prepared_report.alpha_effective == 1.0
-        assert self.prepared_report.derived_surface_target == pms.SiliconStateFractions(0.069, 0.681, 0.25)
+        assert self.prepared_report.derived_surface_target == sms.SiliconStateFractions(0.069, 0.681, 0.25)
         assert self.prepared_report.final_surface.q2_fraction == pytest.approx(self.prepared_report.derived_surface_target.q2_fraction, abs=1e-3)
         assert self.prepared_report.final_surface.q3_fraction == pytest.approx(self.prepared_report.derived_surface_target.q3_fraction, abs=1e-3)
         assert self.prepared_report.final_surface.q4_fraction == pytest.approx(self.prepared_report.derived_surface_target.q4_fraction, abs=1e-3)
@@ -673,7 +632,7 @@ class TestAmorphousSlitPreparation:
                     system.atom_type(atom_id),
                     0.18,
                 )
-                clearance = pms.geom.length(delta) - min_distance
+                clearance = geometry.length(delta) - min_distance
                 assert clearance >= -1e-9, f"Bridge oxygen {bridge_id} is too close to atom {atom_id}."
 
     def test_slit_adjacency_matches_naive_reference(self):
@@ -777,8 +736,8 @@ class TestAmorphousSlitPreparation:
         )
 
     def test_repeat_y_one_reaches_requested_surface_target(self):
-        result = pms.AmorphousSlitBuilder(
-            pms.AmorphousSlitConfig(
+        result = sms.AmorphousSlitBuilder(
+            sms.AmorphousSlitConfig(
                 name="thin_bare_amorphous_slit",
                 repeat_y=1,
                 surface_target=self.surface_target,
@@ -796,22 +755,22 @@ class TestAmorphousSlitPreparation:
         assert result.report.prepared_surface.q4_sites == 239
 
     def test_auto_alpha_q_only_target_uses_unified_conversion(self):
-        base_config = pms.AmorphousSlitConfig(
+        base_config = sms.AmorphousSlitConfig(
             name="auto_alpha_reference",
             repeat_y=1,
             surface_target=self.surface_target,
         )
-        base_result = pms.prepare_amorphous_slit_surface(config=base_config)
+        base_result = sms.prepare_amorphous_slit_surface(config=base_config)
         alpha_auto = base_result.report.alpha_auto
-        reference_surface = pms.SiliconStateFractions(0.069, 0.681, 0.25)
+        reference_surface = sms.SiliconStateFractions(0.069, 0.681, 0.25)
         experimental_target = experimental_target_from_surface(
             reference_surface,
             alpha_auto,
             alpha_override=None,
         )
 
-        result = pms.prepare_amorphous_slit_surface(
-            config=pms.AmorphousSlitConfig(
+        result = sms.prepare_amorphous_slit_surface(
+            config=sms.AmorphousSlitConfig(
                 name="auto_alpha_case",
                 repeat_y=1,
                 surface_target=experimental_target,
@@ -827,17 +786,17 @@ class TestAmorphousSlitPreparation:
         assert result.report.final_surface.q4_sites == 239
 
     def test_surface_conversion_example_matches_expected_q2_enrichment(self):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=0.5,
             q3_fraction=0.0,
             alpha_override=0.5,
         )
         surface_target = slit_mod._surface_target_from_experimental(target, 0.5)
 
-        assert surface_target == pms.SiliconStateFractions(1.0, 0.0, 0.0)
+        assert surface_target == sms.SiliconStateFractions(1.0, 0.0, 0.0)
 
     def test_alpha_override_precedence(self):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=0.02,
             q3_fraction=0.03,
             alpha_override=0.2,
@@ -848,7 +807,7 @@ class TestAmorphousSlitPreparation:
         assert alpha_effective == pytest.approx(0.2, abs=1e-7)
 
     def test_random_seed_reproducibly_changes_bare_surface_realization(self):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=307 / 957,
             q3_fraction=650 / 957,
             q4_fraction=0.0,
@@ -857,8 +816,8 @@ class TestAmorphousSlitPreparation:
 
         def bridge_pairs(seed):
             """Return inserted bridge-neighbor pairs for one seeded variant."""
-            result = pms.prepare_amorphous_slit_surface(
-                pms.AmorphousSlitConfig(
+            result = sms.prepare_amorphous_slit_surface(
+                sms.AmorphousSlitConfig(
                     name=f"seeded_bare_{seed}",
                     repeat_y=1,
                     surface_target=target,
@@ -866,7 +825,7 @@ class TestAmorphousSlitPreparation:
                 )
             )
             assert result.report.random_seed == seed
-            assert result.report.final_surface == pms.SiliconStateComposition(
+            assert result.report.final_surface == sms.SiliconStateComposition(
                 957,
                 307,
                 650,
@@ -886,7 +845,7 @@ class TestAmorphousSlitPreparation:
         assert seed_a_pairs != seed_b_pairs
 
     def test_q4_fraction_is_derived_when_omitted(self):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=0.02,
             q3_fraction=0.03,
             t2_fraction=0.04,
@@ -898,7 +857,7 @@ class TestAmorphousSlitPreparation:
 
     def test_explicit_q4_fraction_must_match_remainder(self):
         with pytest.raises(ValueError, match="q4 fraction"):
-            pms.ExperimentalSiliconStateTarget(
+            sms.ExperimentalSiliconStateTarget(
                 q2_fraction=0.02,
                 q3_fraction=0.03,
                 q4_fraction=0.89,
@@ -912,7 +871,7 @@ class TestAmorphousSlitPreparation:
             match=r"Minimum required alpha is 0\.500000, observed 0\.400000",
         ):
             slit_mod._surface_target_from_experimental(
-                pms.ExperimentalSiliconStateTarget(
+                sms.ExperimentalSiliconStateTarget(
                     q2_fraction=0.5,
                     q3_fraction=0.0,
                     alpha_override=0.4,
@@ -928,7 +887,7 @@ class TestAmorphousSlitPreparation:
         ]
 
         for pair_counts, expected_delta, expected_objectified in cases:
-            config = pms.AmorphousSlitConfig(
+            config = sms.AmorphousSlitConfig(
                 name="bridge_algebra_case",
                 repeat_y=1,
                 surface_target=self.surface_target,
@@ -968,7 +927,7 @@ class TestAmorphousSlitPreparation:
             assert "SLX" not in system.molecule_counts
 
     def test_tolerance_fallback_selects_nearest_realizable_target(self):
-        config = pms.AmorphousSlitConfig(
+        config = sms.AmorphousSlitConfig(
             name="tolerance_case",
             repeat_y=1,
             surface_target=self.surface_target,
@@ -979,8 +938,8 @@ class TestAmorphousSlitPreparation:
             total_surface_si,
             system.binding_sites,
         )
-        requested_target = pms.SiliconStateFractions(66 / 957, 653 / 957, 238 / 957)
-        exact_target = pms.SiliconStateComposition(
+        requested_target = sms.SiliconStateFractions(66 / 957, 653 / 957, 238 / 957)
+        exact_target = sms.SiliconStateComposition(
             total_surface_si=total_surface_si,
             q2_sites=66,
             q3_sites=653,
@@ -1003,7 +962,7 @@ class TestAmorphousSlitPreparation:
         )
 
         assert attempt.used_surface_tolerance
-        assert attempt.target_surface == pms.SiliconStateComposition(
+        assert attempt.target_surface == sms.SiliconStateComposition(
                 total_surface_si=total_surface_si,
                 q2_sites=65,
                 q3_sites=654,
@@ -1014,15 +973,15 @@ class TestAmorphousSlitPreparation:
         assert all(error <= config.surface_fraction_tolerance for error in errors)
 
     def test_prepared_slit_remains_attachable(self):
-        result = pms.prepare_amorphous_slit_surface(
-            config=pms.AmorphousSlitConfig(
+        result = sms.prepare_amorphous_slit_surface(
+            config=sms.AmorphousSlitConfig(
                 name="attachable_bare_amorphous_slit",
                 surface_target=self.surface_target,
             )
         )
 
         attachment = result.system.attach_ligands(
-            molecule=pms.gen.tms(),
+            molecule=generic.tms(),
             mount=0,
             axis=[0, 1],
             site_ids=result.system.available_site_ids(oxygen_count=1)[:1],
@@ -1040,7 +999,7 @@ class TestAmorphousSlitPreparation:
         site_id = cloned.available_site_ids(oxygen_count=1)[0]
 
         attachment = cloned.attach_ligands(
-            molecule=pms.gen.tms(),
+            molecule=generic.tms(),
             mount=0,
             axis=(0, 1),
             site_ids=(site_id,),
@@ -1059,7 +1018,7 @@ class TestAmorphousSlitPreparation:
         site_id = system.available_site_ids(oxygen_count=1)[0]
 
         attachment = system.attach_ligands(
-            molecule=pms.gen.tms(),
+            molecule=generic.tms(),
             mount=0,
             axis=(0, 1),
             site_ids=(site_id,),
@@ -1086,7 +1045,7 @@ class TestAmorphousSlitPreparation:
         assert len(first_snapshot.molecules) == len(second_snapshot.molecules)
         with pytest.raises(ValueError, match="finalized slit"):
             system.attach_ligands(
-                molecule=pms.gen.tms(),
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
                 site_ids=(),
@@ -1096,9 +1055,9 @@ class TestAmorphousSlitPreparation:
 
     def test_bare_builder_rejects_non_zero_t_states(self):
         with pytest.raises(ValueError):
-            pms.prepare_amorphous_slit_surface(
-                config=pms.AmorphousSlitConfig(
-                    surface_target=pms.ExperimentalSiliconStateTarget(
+            sms.prepare_amorphous_slit_surface(
+                config=sms.AmorphousSlitConfig(
+                    surface_target=sms.ExperimentalSiliconStateTarget(
                         q2_fraction=0.05,
                         q3_fraction=0.05,
                         q4_fraction=0.85,
@@ -1182,7 +1141,7 @@ class TestAmorphousSlitPreparation:
 
     def test_finalized_bare_slit_connectivity_is_valid(self):
         snapshot = self.stored_result.system.export_snapshot()
-        report = pms.StructureWriter(snapshot).validate_connectivity(
+        report = sms.StructureWriter(snapshot).validate_connectivity(
             use_atom_names=True
         )
 
@@ -1190,7 +1149,7 @@ class TestAmorphousSlitPreparation:
 
     def test_shared_snapshot_contains_final_ordering_and_connectivity(self):
         snapshot = self.stored_result.system.export_snapshot()
-        graph = pms.StructureWriter(snapshot).assembled_graph(use_atom_names=True)
+        graph = sms.StructureWriter(snapshot).assembled_graph(use_atom_names=True)
 
         assert snapshot.has_assembled_export
         assert tuple(atom.serial for atom in snapshot.atom_order) == tuple(
@@ -1213,7 +1172,7 @@ class TestAmorphousSlitPreparation:
         )
 
     def test_validation_flags_broken_silanol_silicon_environment(self):
-        store = pms.StructureWriter(
+        store = sms.StructureWriter(
             self.stored_result.system.export_snapshot(),
         )
         cache = store._collect_structure_records(use_atom_names=True)
@@ -1244,7 +1203,7 @@ class TestAmorphousSlitPreparation:
         )
 
     def test_validation_flags_broken_geminal_silicon_environment(self):
-        store = pms.StructureWriter(
+        store = sms.StructureWriter(
             self.stored_result.system.export_snapshot(),
         )
         cache = store._collect_structure_records(use_atom_names=True)
@@ -1275,7 +1234,7 @@ class TestAmorphousSlitPreparation:
         )
 
     def test_validation_flags_broken_silanol_hydroxyl_environment(self):
-        store = pms.StructureWriter(
+        store = sms.StructureWriter(
             self.stored_result.system.export_snapshot(),
         )
         cache = store._collect_structure_records(use_atom_names=True)
@@ -1307,9 +1266,9 @@ class TestAmorphousSlitPreparation:
 
     def test_bare_slit_object_files_are_opt_in(self, tmp_path):
         output_dir = tmp_path / "bare_amorphous_slit_preparation_with_objects"
-        pms.write_bare_amorphous_slit(
+        sms.write_bare_amorphous_slit(
             str(output_dir),
-            config=pms.AmorphousSlitConfig(
+            config=sms.AmorphousSlitConfig(
                 name="test_bare_amorphous_slit_with_objects",
                 surface_target=self.surface_target,
             ),
@@ -1318,14 +1277,14 @@ class TestAmorphousSlitPreparation:
 
         assert (output_dir / "test_bare_amorphous_slit_with_objects.obj").is_file()
         assert (output_dir / "test_bare_amorphous_slit_with_objects_system.obj").is_file()
-        snapshot = pms.utils.load(
+        snapshot = utils.load(
             output_dir / "test_bare_amorphous_slit_with_objects.obj"
         )
-        system = pms.utils.load(
+        system = utils.load(
             output_dir / "test_bare_amorphous_slit_with_objects_system.obj"
         )
-        assert isinstance(snapshot, store_mod.StructureSnapshot)
-        assert isinstance(system, pms.SilicaSlit)
+        assert isinstance(snapshot, snapshot_mod.StructureSnapshot)
+        assert isinstance(system, sms.SilicaSlit)
         restored_snapshot = system.export_snapshot()
         assert snapshot.name == restored_snapshot.name
         assert snapshot.atom_order == restored_snapshot.atom_order
@@ -1334,9 +1293,9 @@ class TestAmorphousSlitPreparation:
 
     def test_bare_slit_pdb_writes_conect_by_default(self, tmp_path):
         output_dir = tmp_path / "bare_amorphous_slit_preparation_with_pdb"
-        pms.write_bare_amorphous_slit(
+        sms.write_bare_amorphous_slit(
             str(output_dir),
-            config=pms.AmorphousSlitConfig(
+            config=sms.AmorphousSlitConfig(
                 name="test_bare_amorphous_slit_with_pdb",
                 surface_target=self.surface_target,
             ),
@@ -1354,9 +1313,9 @@ class TestAmorphousSlitPreparation:
 
     def test_bare_slit_cif_writes_bonds_by_default(self, tmp_path):
         output_dir = tmp_path / "bare_amorphous_slit_preparation_with_cif"
-        pms.write_bare_amorphous_slit(
+        sms.write_bare_amorphous_slit(
             str(output_dir),
-            config=pms.AmorphousSlitConfig(
+            config=sms.AmorphousSlitConfig(
                 name="test_bare_amorphous_slit_with_cif",
                 surface_target=self.surface_target,
             ),
@@ -1374,12 +1333,12 @@ class TestAmorphousSlitPreparation:
 
     def test_explicit_silica_topology_override_changes_bare_itp_terms(self, tmp_path):
         output_dir = tmp_path / "bare_amorphous_slit_custom_silica"
-        silica_topology = pms.default_silica_topology()
+        silica_topology = sms.default_silica_topology()
         silica_topology.bond_terms.framework_si_o.force_constant = 123456.0
 
-        result = pms.write_bare_amorphous_slit(
+        result = sms.write_bare_amorphous_slit(
             str(output_dir),
-            config=pms.AmorphousSlitConfig(
+            config=sms.AmorphousSlitConfig(
                 name="bare_custom_silica",
                 surface_target=self.surface_target,
                 silica_topology=silica_topology,
@@ -1396,62 +1355,78 @@ class TestAmorphousSlitPreparation:
         assert "0.16500 123456.000000" in itp_text
 
     def test_top_level_exports_and_version(self):
-        assert pms.__version__ == EXPECTED_VERSION
-        assert callable(pms.prepare_amorphous_slit_surface)
-        assert callable(pms.write_bare_amorphous_slit)
-        assert callable(pms.prepare_functionalized_amorphous_slit_surface)
-        assert callable(pms.write_functionalized_amorphous_slit)
-        assert callable(pms.default_silica_topology)
-        assert isinstance(self.config, pms.AmorphousSlitConfig)
-        assert isinstance(self.surface_target, pms.ExperimentalSiliconStateTarget)
-        assert isinstance(self.prepared_result, pms.SlitPreparationResult)
-        assert isinstance(self.prepared_report, pms.SlitPreparationReport)
-        assert isinstance(self.prepared_report.prepared_surface, pms.SiliconStateComposition)
-        assert isinstance(self.prepared_report.preparation_diagnostics, pms.SurfacePreparationDiagnostics)
-        assert hasattr(pms, "SiliconStateFractions")
-        assert hasattr(pms, "SurfacePreparationDiagnostics")
-        assert hasattr(pms, "BareSilicaChargeContribution")
-        assert hasattr(pms, "BareSilicaChargeDiagnostics")
-        assert hasattr(pms, "FunctionalizedSlitChargeDiagnostics")
-        assert hasattr(pms, "SilaneAttachmentConfig")
-        assert hasattr(pms, "SlitTimingSummary")
-        assert hasattr(pms, "FunctionalizedSlitProgressConfig")
-        assert hasattr(pms, "FunctionalizedSlitStericConfig")
-        assert hasattr(pms, "FunctionalizedAmorphousSlitConfig")
-        assert hasattr(pms, "FunctionalizedSlitResult")
-        assert hasattr(pms, "GeminalMountDihedralSpec")
-        assert hasattr(pms, "SilaneGeminalCrossTerms")
-        assert hasattr(pms, "GraphBond")
-        assert hasattr(pms, "GraphAngle")
-        assert hasattr(pms, "AttachmentRecord")
-        assert hasattr(pms, "AssembledStructureGraph")
-        assert hasattr(pms, "SilicaAtomTypeModel")
-        assert hasattr(pms, "SilicaAtomTypeSet")
-        assert hasattr(pms, "SilicaAtomAssignment")
-        assert hasattr(pms, "SilicaAtomAssignmentSet")
-        assert hasattr(pms, "SilicaBondTerm")
-        assert hasattr(pms, "SilicaBondTermSet")
-        assert hasattr(pms, "SilicaAngleTerm")
-        assert hasattr(pms, "SilicaAngleTermSet")
-        assert hasattr(pms, "SilicaTopologyModel")
-        assert hasattr(pms, "SilaneTopologyConfig")
-        assert hasattr(pms, "SlitJunctionParameters")
+        assert sms.__version__ == EXPECTED_VERSION
+        assert callable(sms.prepare_amorphous_slit_surface)
+        assert callable(sms.write_bare_amorphous_slit)
+        assert callable(sms.prepare_functionalized_amorphous_slit_surface)
+        assert callable(sms.write_functionalized_amorphous_slit)
+        assert callable(sms.default_silica_topology)
+        assert isinstance(self.config, sms.AmorphousSlitConfig)
+        assert isinstance(self.surface_target, sms.ExperimentalSiliconStateTarget)
+        assert isinstance(self.prepared_result, sms.SlitPreparationResult)
+        assert isinstance(self.prepared_report, sms.SlitPreparationReport)
+        assert isinstance(self.prepared_report.prepared_surface, sms.SiliconStateComposition)
+        assert isinstance(self.prepared_report.preparation_diagnostics, sms.SurfacePreparationDiagnostics)
+        assert hasattr(sms, "SiliconStateFractions")
+        assert hasattr(sms, "SurfacePreparationDiagnostics")
+        assert hasattr(sms, "BareSilicaChargeContribution")
+        assert hasattr(sms, "BareSilicaChargeDiagnostics")
+        assert hasattr(sms, "FunctionalizedSlitChargeDiagnostics")
+        assert hasattr(sms, "SilaneAttachmentConfig")
+        assert hasattr(sms, "SlitTimingSummary")
+        assert hasattr(sms, "FunctionalizedSlitProgressConfig")
+        assert hasattr(sms, "FunctionalizedSlitStericConfig")
+        assert hasattr(sms, "FunctionalizedAmorphousSlitConfig")
+        assert hasattr(sms, "FunctionalizedSlitResult")
+        assert hasattr(sms, "GeminalMountDihedralSpec")
+        assert hasattr(sms, "SilaneGeminalCrossTerms")
+        assert hasattr(sms, "SilicaAtomTypeModel")
+        assert hasattr(sms, "SilicaAtomTypeSet")
+        assert hasattr(sms, "SilicaAtomAssignment")
+        assert hasattr(sms, "SilicaAtomAssignmentSet")
+        assert hasattr(sms, "SilicaBondTerm")
+        assert hasattr(sms, "SilicaBondTermSet")
+        assert hasattr(sms, "SilicaAngleTerm")
+        assert hasattr(sms, "SilicaAngleTermSet")
+        assert hasattr(sms, "SilicaTopologyModel")
+        assert hasattr(sms, "SilaneTopologyConfig")
+        for primitive_name in (
+            "Atom",
+            "GraphBond",
+            "GraphAngle",
+            "AttachmentRecord",
+            "AssembledStructureGraph",
+            "Dice",
+            "Matrix",
+            "AlphaCristobalit",
+            "BetaCristobalit",
+            "Cylinder",
+            "Sphere",
+            "Cuboid",
+            "Cone",
+            "db",
+            "gen",
+            "geom",
+            "utils",
+            "SlitJunctionParameters",
+        ):
+            assert primitive_name not in sms.__all__
 
 
 class TestFunctionalizedAmorphousSlit:
     def test_resolve_silane_topology_config_requires_explicit_topology_input(self):
         assert slit_mod.resolve_silane_topology_config(None) is None
         assert slit_mod.resolve_silane_topology_config(
-            pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
             )
         ) is None
 
     def test_silane_attachment_config_defaults_to_ten_degree_rotation_scan(self):
-        ligand = pms.SilaneAttachmentConfig(
-            molecule=pms.gen.tms(),
+        ligand = sms.SilaneAttachmentConfig(
+            molecule=generic.tms(),
             mount=0,
             axis=(0, 1),
         )
@@ -1460,24 +1435,24 @@ class TestFunctionalizedAmorphousSlit:
         assert ligand.rotate_step_deg == 10.0
 
     def test_functionalized_steric_config_defaults_to_relaxed_slit_scale(self):
-        sterics = pms.FunctionalizedSlitStericConfig()
+        sterics = sms.FunctionalizedSlitStericConfig()
 
         assert sterics.enabled
         assert sterics.clearance_scale == pytest.approx(0.60)
 
     def test_functionalized_progress_config_defaults_to_auto_quiet_leave_false(self):
-        progress = pms.FunctionalizedSlitProgressConfig()
+        progress = sms.FunctionalizedSlitProgressConfig()
 
         assert progress.enabled is None
         assert not (progress.leave)
 
     def test_functionalized_config_rejects_tuple_ligand_payload(self):
         with pytest.raises(TypeError, match="SilaneAttachmentConfig"):
-            pms.FunctionalizedAmorphousSlitConfig(
-                slit_config=pms.AmorphousSlitConfig(),
+            sms.FunctionalizedAmorphousSlitConfig(
+                slit_config=sms.AmorphousSlitConfig(),
                 ligand=(
-                    pms.SilaneAttachmentConfig(
-                        molecule=pms.gen.tms(),
+                    sms.SilaneAttachmentConfig(
+                        molecule=generic.tms(),
                         mount=0,
                         axis=(0, 1),
                     ),
@@ -1486,13 +1461,13 @@ class TestFunctionalizedAmorphousSlit:
 
     def test_silane_topology_config_rejects_tuple_geminal_cross_terms(self):
         with pytest.raises(TypeError, match="SilaneGeminalCrossTerms"):
-            pms.SilaneTopologyConfig(
+            sms.SilaneTopologyConfig(
                 itp_path="demo.itp",
                 geminal_cross_terms=(
-                    pms.SilaneGeminalCrossTerms(
+                    sms.SilaneGeminalCrossTerms(
                         first_ligand_atom_name="C1",
                         geminal_oxygen_mount_ligand_angle=(
-                            pms.GromacsAngleParameters.harmonic(
+                            sms.GromacsAngleParameters.harmonic(
                                 angle_deg=109.5,
                                 force_constant=418.4,
                             )
@@ -1510,7 +1485,7 @@ class TestFunctionalizedAmorphousSlit:
         def is_generated_geminal_record(record, atom_type):
             return record.atom_name == "O1" and atom_type == "O"
 
-        assert store_mod._full_slit_mount_ligand_cross_angle_role(
+        assert snapshot_mod._full_slit_mount_ligand_cross_angle_role(
             scaffold_oxygen,
             mount,
             first,
@@ -1519,7 +1494,7 @@ class TestFunctionalizedAmorphousSlit:
             first_ligand_atom_name="CA1",
             is_generated_geminal_record=is_generated_geminal_record,
         ) == "scaffold"
-        assert store_mod._full_slit_mount_ligand_cross_angle_role(
+        assert snapshot_mod._full_slit_mount_ligand_cross_angle_role(
             geminal_oxygen,
             mount,
             first,
@@ -1533,7 +1508,7 @@ class TestFunctionalizedAmorphousSlit:
         bar = slit_mod._create_progress_bar(
             total=3,
             desc="demo",
-            progress_config=pms.FunctionalizedSlitProgressConfig(),
+            progress_config=sms.FunctionalizedSlitProgressConfig(),
             unit="step",
         )
 
@@ -1545,7 +1520,7 @@ class TestFunctionalizedAmorphousSlit:
         bar = slit_mod._create_progress_bar(
             total=3,
             desc="demo",
-            progress_config=pms.FunctionalizedSlitProgressConfig(enabled=False),
+            progress_config=sms.FunctionalizedSlitProgressConfig(enabled=False),
             unit="step",
         )
 
@@ -1570,7 +1545,7 @@ class TestFunctionalizedAmorphousSlit:
         bar = slit_mod._create_progress_bar(
             total=4,
             desc="forced",
-            progress_config=pms.FunctionalizedSlitProgressConfig(enabled=True, leave=True),
+            progress_config=sms.FunctionalizedSlitProgressConfig(enabled=True, leave=True),
             unit="stage",
         )
 
@@ -1581,22 +1556,22 @@ class TestFunctionalizedAmorphousSlit:
 
     def test_slit_attachment_default_steric_scale_matches_workflow_default(self):
         steric_parameter = inspect.signature(
-            pms.SilicaSlit.attach_ligands
+            sms.SilicaSlit.attach_ligands
         ).parameters["steric_clearance_scale"]
 
         assert steric_parameter.default == pytest.approx(0.60)
 
     def test_functionalized_path_uses_configured_steric_clearance_scale(self, monkeypatch):
         recorded_scales = []
-        original_attach = pms.SilicaSlit.attach_ligands
+        original_attach = sms.SilicaSlit.attach_ligands
 
         def recording_attach(self, *args, **kwargs):
             recorded_scales.append(kwargs.get("steric_clearance_scale"))
             return original_attach(self, *args, **kwargs)
 
-        monkeypatch.setattr(pms.SilicaSlit, "attach_ligands", recording_attach)
+        monkeypatch.setattr(sms.SilicaSlit, "attach_ligands", recording_attach)
 
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=239 / 957,
@@ -1604,29 +1579,29 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=1 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_custom_sterics",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            ligand=sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
                 rotate_about_axis=False,
             ),
-            steric_settings=pms.FunctionalizedSlitStericConfig(clearance_scale=0.55),
+            steric_settings=sms.FunctionalizedSlitStericConfig(clearance_scale=0.55),
         )
 
-        pms.prepare_functionalized_amorphous_slit_surface(config)
+        sms.prepare_functionalized_amorphous_slit_surface(config)
 
         assert recorded_scales
         assert 0.55 in recorded_scales
 
     def test_functionalized_path_batches_attachment_slots(self, monkeypatch):
         recorded_calls = []
-        original_attach = pms.SilicaSlit.attach_ligands
+        original_attach = sms.SilicaSlit.attach_ligands
 
         def recording_attach(self, *args, **kwargs):
             recorded_calls.append(
@@ -1639,9 +1614,9 @@ class TestFunctionalizedAmorphousSlit:
             )
             return original_attach(self, *args, **kwargs)
 
-        monkeypatch.setattr(pms.SilicaSlit, "attach_ligands", recording_attach)
+        monkeypatch.setattr(sms.SilicaSlit, "attach_ligands", recording_attach)
 
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=63 / 957,
             q3_fraction=648 / 957,
             q4_fraction=239 / 957,
@@ -1649,21 +1624,21 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=4 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_batched_attachment",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            ligand=sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
                 rotate_about_axis=False,
             ),
         )
 
-        pms.prepare_functionalized_amorphous_slit_surface(config)
+        sms.prepare_functionalized_amorphous_slit_surface(config)
 
         batched_calls = [
             call for call in recorded_calls
@@ -1679,7 +1654,7 @@ class TestFunctionalizedAmorphousSlit:
         )
 
     def test_random_seed_reproducibly_changes_functionalized_graft_sites(self):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=308 / 957,
             q3_fraction=648 / 957,
             q4_fraction=0.0,
@@ -1690,23 +1665,23 @@ class TestFunctionalizedAmorphousSlit:
 
         def attachment_sites(seed):
             """Return grafted site ids for one seeded functionalized variant."""
-            config = pms.FunctionalizedAmorphousSlitConfig(
-                slit_config=pms.AmorphousSlitConfig(
+            config = sms.FunctionalizedAmorphousSlitConfig(
+                slit_config=sms.AmorphousSlitConfig(
                     name=f"seeded_functionalized_{seed}",
                     repeat_y=1,
                     surface_target=target,
                     random_seed=seed,
                 ),
-                ligand=pms.SilaneAttachmentConfig(
-                    molecule=pms.gen.tms(),
+                ligand=sms.SilaneAttachmentConfig(
+                    molecule=generic.tms(),
                     mount=0,
                     axis=(0, 1),
                     rotate_about_axis=False,
                 ),
             )
-            result = pms.prepare_functionalized_amorphous_slit_surface(config)
+            result = sms.prepare_functionalized_amorphous_slit_surface(config)
             assert result.report.random_seed == seed
-            assert result.report.final_surface == pms.SiliconStateComposition(
+            assert result.report.final_surface == sms.SiliconStateComposition(
                 957,
                 308,
                 648,
@@ -1750,7 +1725,7 @@ class TestFunctionalizedAmorphousSlit:
 
         monkeypatch.setattr(slit_mod, "_create_progress_bar", fake_create_progress_bar)
 
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=239 / 957,
@@ -1758,22 +1733,22 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=1 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_progress_prepare",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            ligand=sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
                 rotate_about_axis=False,
             ),
-            progress_settings=pms.FunctionalizedSlitProgressConfig(enabled=True),
+            progress_settings=sms.FunctionalizedSlitProgressConfig(enabled=True),
         )
 
-        result = pms.AmorphousSlitBuilder(
+        result = sms.AmorphousSlitBuilder(
             config.slit_config
         ).prepare_functionalized(
             ligand=config.ligand,
@@ -1781,7 +1756,7 @@ class TestFunctionalizedAmorphousSlit:
             progress_settings=config.progress_settings,
         )
 
-        assert result.report.final_surface == pms.SiliconStateComposition(957, 65, 651, 239, 1, 1)
+        assert result.report.final_surface == sms.SiliconStateComposition(957, 65, 651, 239, 1, 1)
         stage_bars = [bar for bar in created if bar.unit == "stage"]
         site_bars = [bar for bar in created if bar.unit == "site"]
         assert len(stage_bars) == 1
@@ -1793,7 +1768,7 @@ class TestFunctionalizedAmorphousSlit:
         assert any(desc == "T3 attachment" for desc in stage_bars[0].descriptions)
         assert sorted(bar.total for bar in site_bars) == [1, 1]
 
-    def test_write_progress_includes_finalize_and_store_stages(self, monkeypatch, tmp_path):
+    def test_write_progress_includes_finalize_and_export_stages(self, monkeypatch, tmp_path):
         created = []
 
         def fake_create_progress_bar(total, desc, progress_config, unit="it"):
@@ -1804,7 +1779,7 @@ class TestFunctionalizedAmorphousSlit:
 
         monkeypatch.setattr(slit_mod, "_create_progress_bar", fake_create_progress_bar)
 
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=239 / 957,
@@ -1812,22 +1787,22 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=1 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_progress_write",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            ligand=sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
                 rotate_about_axis=False,
             ),
-            progress_settings=pms.FunctionalizedSlitProgressConfig(enabled=True),
+            progress_settings=sms.FunctionalizedSlitProgressConfig(enabled=True),
         )
 
-        result = pms.write_functionalized_amorphous_slit(
+        result = sms.write_functionalized_amorphous_slit(
             str(tmp_path / "functionalized_progress_write"),
             config,
             write_pdb=False,
@@ -1836,7 +1811,7 @@ class TestFunctionalizedAmorphousSlit:
 
         assert result.charge_diagnostics is None
         assert result.report.timing_summary.finalize_s > 0
-        assert result.report.timing_summary.store_export_s > 0
+        assert result.report.timing_summary.export_s > 0
         assert not (tmp_path / "functionalized_progress_write" / "functionalized_progress_write.top").exists()
         assert not (tmp_path / "functionalized_progress_write" / "functionalized_progress_write.itp").exists()
         stage_bars = [bar for bar in created if bar.unit == "stage"]
@@ -1844,10 +1819,10 @@ class TestFunctionalizedAmorphousSlit:
         assert stage_bars[0].total == 6
         assert stage_bars[0].n == 6
         assert any(desc == "Finalize" for desc in stage_bars[0].descriptions)
-        assert any(desc == "Store/export" for desc in stage_bars[0].descriptions)
+        assert any(desc == "Finalize/export" for desc in stage_bars[0].descriptions)
 
     def test_exact_functionalized_target_is_realized(self):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=63 / 957,
             q3_fraction=648 / 957,
             q4_fraction=239 / 957,
@@ -1855,27 +1830,27 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=4 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_exact_slit",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            ligand=sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
             ),
         )
 
-        result = pms.prepare_functionalized_amorphous_slit_surface(config)
+        result = sms.prepare_functionalized_amorphous_slit_surface(config)
 
-        assert isinstance(result.silica_topology, pms.SilicaTopologyModel)
+        assert isinstance(result.silica_topology, sms.SilicaTopologyModel)
         assert not (result.report.used_surface_tolerance)
-        assert result.report.prepared_surface == pms.SiliconStateComposition(957, 66, 652, 239)
-        assert result.report.final_surface == pms.SiliconStateComposition(957, 63, 648, 239, 3, 4)
+        assert result.report.prepared_surface == sms.SiliconStateComposition(957, 66, 652, 239)
+        assert result.report.final_surface == sms.SiliconStateComposition(957, 63, 648, 239, 3, 4)
         assert result.report.final_surface == result.report.target_surface
-        assert isinstance(result.report.timing_summary, pms.SlitTimingSummary)
+        assert isinstance(result.report.timing_summary, sms.SlitTimingSummary)
         assert result.report.timing_summary.base_slit_build_s > 0
         assert result.report.timing_summary.q_state_preparation_s > 0
         assert result.report.timing_summary.t2_attachment_s > 0
@@ -1884,7 +1859,7 @@ class TestFunctionalizedAmorphousSlit:
         assert "SLX" not in result.system.molecule_counts
 
     def test_functionalized_tolerance_fallback_selects_nearest_realizable_target(self):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=63 / 957,
             q3_fraction=649 / 957,
             q4_fraction=238 / 957,
@@ -1892,23 +1867,23 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=4 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_tolerance_slit",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            ligand=sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
             ),
         )
 
-        result = pms.prepare_functionalized_amorphous_slit_surface(config)
+        result = sms.prepare_functionalized_amorphous_slit_surface(config)
 
         assert result.report.used_surface_tolerance
-        assert result.report.final_surface == pms.SiliconStateComposition(957, 63, 648, 239, 3, 4)
+        assert result.report.final_surface == sms.SiliconStateComposition(957, 63, 648, 239, 3, 4)
         errors = slit_mod._surface_fraction_errors(
             result.report.final_surface,
             result.report.derived_surface_target,
@@ -1916,7 +1891,7 @@ class TestFunctionalizedAmorphousSlit:
         assert all(error <= result.report.surface_fraction_tolerance for error in errors)
 
     def test_functionalized_assembled_graph_contains_graft_junctions_and_angles(self):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=63 / 957,
             q3_fraction=648 / 957,
             q4_fraction=239 / 957,
@@ -1924,32 +1899,32 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=4 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_graph_slit",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            ligand=sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
             ),
         )
 
-        result = pms.prepare_functionalized_amorphous_slit_surface(config)
+        result = sms.prepare_functionalized_amorphous_slit_surface(config)
         finalized_system = result.system.clone()
         finalized_system.finalize()
         snapshot = finalized_system.export_snapshot()
-        store = pms.StructureWriter(snapshot)
+        store = sms.StructureWriter(snapshot)
         graph = store.assembled_graph(use_atom_names=True)
         report = store.validate_connectivity(use_atom_names=True)
         cache = store._collect_structure_records(use_atom_names=True)
         atom_records = cache.atom_records
         molecule_serials = cache.molecule_serials
 
-        assert isinstance(graph, pms.AssembledStructureGraph)
-        assert isinstance(report, pms.ConnectivityValidationReport)
+        assert isinstance(graph, AssembledStructureGraph)
+        assert isinstance(report, ConnectivityValidationReport)
         assert not (any(
                 finding.code in {"framework_oxygen_environment", "framework_silicon_environment"}
                 for finding in report.findings
@@ -1984,7 +1959,7 @@ class TestFunctionalizedAmorphousSlit:
         assert all(record_by_serial[serial].atom_type == "O" for serial in graft_neighbors)
 
     def test_finalized_functionalized_connectivity_is_valid(self):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=63 / 957,
             q3_fraction=648 / 957,
             q4_fraction=239 / 957,
@@ -1992,22 +1967,22 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=4 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_final_validation_slit",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            ligand=sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
             ),
         )
 
-        result = pms.prepare_functionalized_amorphous_slit_surface(config)
+        result = sms.prepare_functionalized_amorphous_slit_surface(config)
         result.system.finalize()
-        report = pms.StructureWriter(
+        report = sms.StructureWriter(
             result.system.export_snapshot()
         ).validate_connectivity(use_atom_names=True)
 
@@ -2015,7 +1990,7 @@ class TestFunctionalizedAmorphousSlit:
 
     def test_functionalized_bonded_exports_include_graft_connectivity(self, tmp_path):
         output_dir = tmp_path / "functionalized_amorphous_slit_bonded_export"
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=63 / 957,
             q3_fraction=648 / 957,
             q4_fraction=239 / 957,
@@ -2023,21 +1998,21 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=4 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_export_slit",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
-                molecule=pms.gen.tms(),
+            ligand=sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
                 mount=0,
                 axis=(0, 1),
                 topology=explicit_tms_topology_config(tmp_path),
             ),
         )
 
-        result = pms.write_functionalized_amorphous_slit(
+        result = sms.write_functionalized_amorphous_slit(
             str(output_dir),
             config,
             write_pdb=True,
@@ -2074,11 +2049,11 @@ class TestFunctionalizedAmorphousSlit:
         assert result.charge_diagnostics.final_total_charge == pytest.approx(0.0, abs=1e-6)
         assert sum(row[3] for row in itp_atom_rows(output_dir / "functionalized_export_slit.itp")) == pytest.approx(0.0, abs=1e-6)
         assert result.report.timing_summary.finalize_s > 0
-        assert result.report.timing_summary.store_export_s > 0
+        assert result.report.timing_summary.export_s > 0
 
     def test_explicit_silica_topology_override_changes_functionalized_junction_angles(self, tmp_path):
         output_dir = tmp_path / "functionalized_amorphous_slit_custom_silica"
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=239 / 957,
@@ -2086,26 +2061,26 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=1 / 957,
             alpha_override=1.0,
         )
-        silica_topology = pms.default_silica_topology()
+        silica_topology = sms.default_silica_topology()
         silica_topology.angle_terms.graft_oxygen_mount_oxygen.angle_deg = 111.11111
         silica_topology.angle_terms.graft_oxygen_mount_oxygen.force_constant = 222.222222
 
-        result = pms.write_functionalized_amorphous_slit(
+        result = sms.write_functionalized_amorphous_slit(
             str(output_dir),
-            pms.FunctionalizedAmorphousSlitConfig(
-                slit_config=pms.AmorphousSlitConfig(
+            sms.FunctionalizedAmorphousSlitConfig(
+                slit_config=sms.AmorphousSlitConfig(
                     name="functionalized_custom_silica",
                     repeat_y=1,
                     surface_target=target,
                     silica_topology=silica_topology,
                 ),
-                ligand=pms.SilaneAttachmentConfig(
-                    molecule=pms.gen.tms(),
+                ligand=sms.SilaneAttachmentConfig(
+                    molecule=generic.tms(),
                     mount=0,
                     axis=(0, 1),
                     topology=explicit_tms_topology_config(tmp_path),
                 ),
-                progress_settings=pms.FunctionalizedSlitProgressConfig(enabled=False),
+                progress_settings=sms.FunctionalizedSlitProgressConfig(enabled=False),
             ),
             write_pdb=False,
             write_cif=False,
@@ -2118,70 +2093,9 @@ class TestFunctionalizedAmorphousSlit:
         assert result.silica_topology.angle_terms.graft_oxygen_mount_oxygen.angle_deg == pytest.approx(111.11111)
         assert "111.11111 222.222222" in itp_text
 
-    def test_legacy_junction_parameters_still_override_defaults_when_no_silica_model_is_supplied(self, tmp_path):
-        output_dir = tmp_path / "functionalized_amorphous_slit_legacy_junction_override"
-        target = pms.ExperimentalSiliconStateTarget(
-            q2_fraction=65 / 957,
-            q3_fraction=651 / 957,
-            q4_fraction=239 / 957,
-            t2_fraction=1 / 957,
-            t3_fraction=1 / 957,
-            alpha_override=1.0,
-        )
-        legacy_junctions = pms.SlitJunctionParameters(
-            mount_scaffold_bond=topo_mod.GromacsBondParameters.harmonic(
-                length_nm=0.16666,
-                force_constant=123456.789,
-            ),
-            scaffold_si_scaffold_o_mount_angle=topo_mod.GromacsAngleParameters.harmonic(
-                angle_deg=149.12345,
-                force_constant=654.321,
-            ),
-            oxygen_mount_oxygen_angle=topo_mod.GromacsAngleParameters.harmonic(
-                angle_deg=112.22222,
-                force_constant=333.444,
-            ),
-        )
-
-        result = pms.write_functionalized_amorphous_slit(
-            str(output_dir),
-            pms.FunctionalizedAmorphousSlitConfig(
-                slit_config=pms.AmorphousSlitConfig(
-                    name="functionalized_legacy_junction_override",
-                    repeat_y=1,
-                    surface_target=target,
-                ),
-                ligand=pms.SilaneAttachmentConfig(
-                    molecule=pms.gen.tms(),
-                    mount=0,
-                    axis=(0, 1),
-                    topology=explicit_tms_topology_config(
-                        tmp_path,
-                        junction_parameters=legacy_junctions,
-                    ),
-                ),
-                progress_settings=pms.FunctionalizedSlitProgressConfig(enabled=False),
-            ),
-            write_pdb=False,
-            write_cif=False,
-        )
-
-        with open(output_dir / "functionalized_legacy_junction_override.itp", "r") as file_in:
-            itp_text = file_in.read()
-
-        assert result.silica_topology.bond_terms.graft_mount_scaffold_si_o.length_nm == pytest.approx(0.16666)
-        assert result.silica_topology.angle_terms.graft_scaffold_si_scaffold_o_mount.angle_deg == pytest.approx(149.12345)
-        assert result.silica_topology.angle_terms.graft_oxygen_mount_oxygen.angle_deg == pytest.approx(112.22222)
-        assert result.silica_topology.bond_terms.graft_mount_scaffold_si_o.origin == (
-            "legacy SilaneTopologyConfig.junction_parameters.mount_scaffold_bond"
-        )
-        assert "0.16666 123456.789000" in itp_text
-        assert "149.12345 654.321000" in itp_text
-        assert "112.22222 333.444000" in itp_text
-
     def test_functionalized_write_skips_topology_without_explicit_silane_itp(self, tmp_path):
         output_dir = tmp_path / "functionalized_no_explicit_topology"
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=239 / 957,
@@ -2190,20 +2104,20 @@ class TestFunctionalizedAmorphousSlit:
             alpha_override=1.0,
         )
 
-        result = pms.write_functionalized_amorphous_slit(
+        result = sms.write_functionalized_amorphous_slit(
             str(output_dir),
-            pms.FunctionalizedAmorphousSlitConfig(
-                slit_config=pms.AmorphousSlitConfig(
+            sms.FunctionalizedAmorphousSlitConfig(
+                slit_config=sms.AmorphousSlitConfig(
                     name="functionalized_no_explicit_topology",
                     repeat_y=1,
                     surface_target=target,
                 ),
-                ligand=pms.SilaneAttachmentConfig(
-                    molecule=pms.gen.tms(),
+                ligand=sms.SilaneAttachmentConfig(
+                    molecule=generic.tms(),
                     mount=0,
                     axis=(0, 1),
                 ),
-                progress_settings=pms.FunctionalizedSlitProgressConfig(enabled=False),
+                progress_settings=sms.FunctionalizedSlitProgressConfig(enabled=False),
             ),
             write_pdb=False,
             write_cif=False,
@@ -2215,7 +2129,7 @@ class TestFunctionalizedAmorphousSlit:
 
     def test_functionalized_export_rejects_charge_mismatched_t3_topology(self, tmp_path):
         output_dir = tmp_path / "functionalized_invalid_t3_charge"
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=239 / 957,
@@ -2225,25 +2139,25 @@ class TestFunctionalizedAmorphousSlit:
         )
 
         with pytest.raises(ValueError, match="base T3 fragment topology"):
-            pms.write_functionalized_amorphous_slit(
+            sms.write_functionalized_amorphous_slit(
                 str(output_dir),
-                pms.FunctionalizedAmorphousSlitConfig(
-                    slit_config=pms.AmorphousSlitConfig(
+                sms.FunctionalizedAmorphousSlitConfig(
+                    slit_config=sms.AmorphousSlitConfig(
                         name="functionalized_invalid_t3_charge",
                         repeat_y=1,
                         surface_target=target,
                     ),
-                    ligand=pms.SilaneAttachmentConfig(
-                        molecule=pms.gen.tms(),
+                    ligand=sms.SilaneAttachmentConfig(
+                        molecule=generic.tms(),
                         mount=0,
                         axis=(0, 1),
-                        topology=pms.SilaneTopologyConfig(
+                        topology=sms.SilaneTopologyConfig(
                             itp_path=str(bundled_tms_template_path()),
                             moleculetype_name="TMS",
                             geminal_cross_terms=explicit_tms_geminal_cross_terms(),
                         ),
                     ),
-                    progress_settings=pms.FunctionalizedSlitProgressConfig(enabled=False),
+                    progress_settings=sms.FunctionalizedSlitProgressConfig(enabled=False),
                 ),
                 write_pdb=False,
                 write_cif=False,
@@ -2251,7 +2165,7 @@ class TestFunctionalizedAmorphousSlit:
 
     def test_functionalized_export_rejects_missing_geminal_cross_terms(self, tmp_path):
         output_dir = tmp_path / "functionalized_missing_geminal_terms"
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=239 / 957,
@@ -2261,16 +2175,16 @@ class TestFunctionalizedAmorphousSlit:
         )
 
         with pytest.raises(ValueError, match="geminal_cross_terms"):
-            pms.write_functionalized_amorphous_slit(
+            sms.write_functionalized_amorphous_slit(
                 str(output_dir),
-                pms.FunctionalizedAmorphousSlitConfig(
-                    slit_config=pms.AmorphousSlitConfig(
+                sms.FunctionalizedAmorphousSlitConfig(
+                    slit_config=sms.AmorphousSlitConfig(
                         name="functionalized_missing_geminal_terms",
                         repeat_y=1,
                         surface_target=target,
                     ),
-                    ligand=pms.SilaneAttachmentConfig(
-                        molecule=pms.gen.tms(),
+                    ligand=sms.SilaneAttachmentConfig(
+                        molecule=generic.tms(),
                         mount=0,
                         axis=(0, 1),
                         topology=explicit_tms_topology_config(
@@ -2278,7 +2192,7 @@ class TestFunctionalizedAmorphousSlit:
                             include_geminal_terms=False,
                         ),
                     ),
-                    progress_settings=pms.FunctionalizedSlitProgressConfig(enabled=False),
+                    progress_settings=sms.FunctionalizedSlitProgressConfig(enabled=False),
                 ),
                 write_pdb=False,
                 write_cif=False,
@@ -2286,7 +2200,7 @@ class TestFunctionalizedAmorphousSlit:
 
     def test_teps_exports_use_pdb_aliases_and_consistent_mmcif_metadata(self, tmp_path, repo_root):
         output_dir = tmp_path / "functionalized_amorphous_slit_teps_export"
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=239 / 957,
@@ -2294,23 +2208,23 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=1 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_teps_export",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
+            ligand=sms.SilaneAttachmentConfig(
                 molecule=teps_ligand(repo_root),
                 mount=0,
                 axis=(0, 1),
                 rotate_about_axis=False,
             ),
-            steric_settings=pms.FunctionalizedSlitStericConfig(clearance_scale=0.60),
-            progress_settings=pms.FunctionalizedSlitProgressConfig(enabled=False),
+            steric_settings=sms.FunctionalizedSlitStericConfig(clearance_scale=0.60),
+            progress_settings=sms.FunctionalizedSlitProgressConfig(enabled=False),
         )
 
-        pms.write_functionalized_amorphous_slit(
+        sms.write_functionalized_amorphous_slit(
             str(output_dir),
             config,
             write_pdb=True,
@@ -2352,7 +2266,7 @@ class TestFunctionalizedAmorphousSlit:
         for line in teps_atom_lines[:3] + tepsg_atom_lines[:3]:
             assert line[21] == "A"
             assert line[26] == " "
-            assert store_mod._decode_hybrid36(4, line[22:26]) >= 1
+            assert snapshot_mod._decode_hybrid36(4, line[22:26]) >= 1
 
         entity_tags, entity_rows = cif_loop_rows(cif_text, "_entity.id")
         asym_tags, asym_rows = cif_loop_rows(cif_text, "_struct_asym.id")
@@ -2380,7 +2294,7 @@ class TestFunctionalizedAmorphousSlit:
         assert not (output_dir / "functionalized_teps_export.itp").exists()
 
     def test_small_teps_functionalized_smoke_populates_timing_summary(self, repo_root):
-        target = pms.ExperimentalSiliconStateTarget(
+        target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=239 / 957,
@@ -2388,24 +2302,24 @@ class TestFunctionalizedAmorphousSlit:
             t3_fraction=1 / 957,
             alpha_override=1.0,
         )
-        config = pms.FunctionalizedAmorphousSlitConfig(
-            slit_config=pms.AmorphousSlitConfig(
+        config = sms.FunctionalizedAmorphousSlitConfig(
+            slit_config=sms.AmorphousSlitConfig(
                 name="functionalized_teps_smoke",
                 repeat_y=1,
                 surface_target=target,
             ),
-            ligand=pms.SilaneAttachmentConfig(
+            ligand=sms.SilaneAttachmentConfig(
                 molecule=teps_ligand(repo_root),
                 mount=0,
                 axis=(0, 1),
                 rotate_about_axis=False,
             ),
-            steric_settings=pms.FunctionalizedSlitStericConfig(clearance_scale=0.60),
+            steric_settings=sms.FunctionalizedSlitStericConfig(clearance_scale=0.60),
         )
 
-        result = pms.prepare_functionalized_amorphous_slit_surface(config)
+        result = sms.prepare_functionalized_amorphous_slit_surface(config)
 
-        assert result.report.final_surface == pms.SiliconStateComposition(957, 65, 651, 239, 1, 1)
+        assert result.report.final_surface == sms.SiliconStateComposition(957, 65, 651, 239, 1, 1)
         assert result.report.timing_summary.base_slit_build_s > 0
         assert result.report.timing_summary.q_state_preparation_s > 0
         assert result.report.timing_summary.t2_attachment_s > 0

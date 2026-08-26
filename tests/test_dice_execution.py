@@ -85,7 +85,7 @@ class TestDiceExecution:
         Parameters
         ----------
         bond_list : list
-            Bond list returned by :meth:`porems.dice.Dice.find`.
+            Bond list returned by :meth:`silicams.dice.Dice.find`.
 
         Returns
         -------
@@ -143,10 +143,11 @@ class TestDiceExecution:
         code = """
 import json
 import warnings
-import porems as pms
+from silicams.dice import Dice
+from silicams.pattern import BetaCristobalit
 
-block = pms.BetaCristobalit().generate([2, 2, 2], "z")
-dice = pms.Dice(block, 0.2, True)
+block = BetaCristobalit().generate([2, 2, 2], "z")
+dice = Dice(block, 0.2, True)
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
     result = dice.find(
@@ -170,13 +171,15 @@ print(json.dumps({
         code = """
 import json
 import warnings
-import porems as pms
+from silicams.dice import Dice
+from silicams.matrix import Matrix
+from silicams.pattern import BetaCristobalit
 
-block = pms.BetaCristobalit().generate([2, 2, 2], "z")
+block = BetaCristobalit().generate([2, 2, 2], "z")
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
-    matrix = pms.Matrix(
-        pms.Dice(block, 0.4, True).find(
+    matrix = Matrix(
+        Dice(block, 0.4, True).find(
             None,
             ["Si", "O"],
             [0.155 - 1e-2, 0.155 + 1e-2],

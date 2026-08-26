@@ -14,7 +14,7 @@ def _configure_test_environment() -> None:
     Pytest imports test modules before fixtures run, so Matplotlib/XDG-related
     environment variables must be set during ``conftest`` import.
     """
-    env_root = Path("/tmp/porems_pytest_env")
+    env_root = Path("/tmp/silicams_pytest_env")
     xdg_cache = env_root / "xdg_cache"
     mpl_config = env_root / "mpl_config"
     xdg_cache.mkdir(parents=True, exist_ok=True)
@@ -111,10 +111,11 @@ def module_workspace(
 def dice_execution_context(repo_root: Path) -> DiceExecutionContext:
     """Build the shared dice-search context used by dice execution tests."""
 
-    import porems as pms
+    from silicams.dice import Dice
+    from silicams.pattern import BetaCristobalit
 
-    block = pms.BetaCristobalit().generate([2, 2, 2], "z")
-    dice = pms.Dice(block, 0.2, True)
+    block = BetaCristobalit().generate([2, 2, 2], "z")
+    dice = Dice(block, 0.2, True)
     search_args = (None, ["Si", "O"], [0.155 - 1e-2, 0.155 + 1e-2])
     expected = sorted(
         [[entry[0], sorted(entry[1])] for entry in dice.find(*search_args)],
@@ -133,20 +134,20 @@ def dice_execution_context(repo_root: Path) -> DiceExecutionContext:
 def bare_slit_context(tmp_path_factory: pytest.TempPathFactory) -> BareSlitContext:
     """Build the shared bare amorphous slit context used by slit tests."""
 
-    import porems as pms
+    import silicams as sms
 
     output_dir = tmp_path_factory.mktemp("bare_amorphous_slit_preparation")
-    surface_target = pms.ExperimentalSiliconStateTarget(
+    surface_target = sms.ExperimentalSiliconStateTarget(
         q2_fraction=0.069,
         q3_fraction=0.681,
         alpha_override=1.0,
     )
-    config = pms.AmorphousSlitConfig(
+    config = sms.AmorphousSlitConfig(
         name="test_bare_amorphous_slit",
         surface_target=surface_target,
     )
-    prepared_result = pms.prepare_amorphous_slit_surface(config=config)
-    stored_result = pms.write_bare_amorphous_slit(
+    prepared_result = sms.prepare_amorphous_slit_surface(config=config)
+    stored_result = sms.write_bare_amorphous_slit(
         str(output_dir),
         config=config,
     )

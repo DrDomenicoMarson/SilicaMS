@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import porems.slit_fill as slit_fill_mod
+import silicams.slit_fill as slit_fill_mod
 
 
 def _gro_atom_line(

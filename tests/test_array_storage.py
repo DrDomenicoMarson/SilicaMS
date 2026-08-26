@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import porems as pms
+import silicams as sms
 
 
 pytestmark = pytest.mark.usefixtures("module_workspace")
@@ -11,7 +11,7 @@ class TestArrayBackedMolecule:
     """Validate the array-backed molecule storage and compatibility snapshots."""
 
     def test_positions_view_tracks_coordinate_edits(self):
-        mol = pms.Molecule(inp="data/benzene.gro")
+        mol = sms.Molecule(inp="data/benzene.gro")
 
         initial_positions = mol.positions_view().copy()
         np.testing.assert_allclose(initial_positions[0], mol.pos(0))
@@ -34,13 +34,13 @@ class TestArrayBackedMolecule:
 
         assert len(mol.infer_bonds()) == 12
 
-        overlap = pms.Molecule()
+        overlap = sms.Molecule()
         overlap.add("C", [0.0, 0.0, 0.0])
         overlap.add("C", [0.0, 0.0, 0.0])
         assert overlap.overlap() == {0: [1]}
 
     def test_get_atom_list_returns_detached_snapshots(self):
-        mol = pms.Molecule()
+        mol = sms.Molecule()
         mol.add("C", [0.0, 0.0, 0.0], name="C1")
 
         snapshot = mol.get_atom_list()

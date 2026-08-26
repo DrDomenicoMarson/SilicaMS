@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: >-
+  Cite the SilicaMS version used. When inherited silica-construction methods
+  are relevant, also cite the original PoreMS paper identified in this file.
+title: SilicaMS
+type: software
+version: 0.5.0
+license: GPL-3.0-only
+repository-code: https://github.com/DrDomenicoMarson/SilicaMS
+url: https://drdomenicomarson.github.io/SilicaMS/
+authors:
+  - family-names: Marson
+    given-names: Domenico
+  - family-names: Kraus
+    given-names: Hamzeh
+  - family-names: Högler
+    given-names: Marc
+references:
+  - type: article
+    title: >-
+      PoreMS: a software tool for generating silica pore models with
+      user-defined surface functionalisation and pore dimensions
+    doi: 10.1080/08927022.2020.1871478
+    year: 2021
+    journal: Molecular Simulation
+    volume: 47
+    issue: 4
+    start: 306
+    end: 316
+    authors:
+      - family-names: Kraus
+        given-names: Hamzeh
+      - family-names: Rybka
+        given-names: Julia
+      - family-names: Höltzel
+        given-names: Alexandra
+      - family-names: Trebel
+        given-names: Nicole
+      - family-names: Tallarek
+        given-names: Ulrich
+      - family-names: Hansen
+        given-names: Niels

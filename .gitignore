@@ -1,10 +1,15 @@
-porems.egg-info/
+silicams.egg-info/
 build/
+dist/
 __pycache__/
 *.pyc
 .DS_Store
 ._.DS_Store
 .ipynb_checkpoints
 .coverage
+.ruff_cache/
 .pytest_cache
-docsrc/_build/
+htmlcov/
+docs/_build/
+docs/_generated/
+examples/output/

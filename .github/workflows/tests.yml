@@ -1,0 +1,30 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install package and verification dependencies
+        run: python -m pip install -e '.[test,dev]'
+      - name: Run critical Ruff checks
+        run: python -m ruff check .
+      - name: Run tests with local coverage reporting
+        run: python -m pytest --cov=silicams --cov-report=term-missing
+      - name: Build installation wheel
+        run: python -m pip wheel . --no-deps --no-build-isolation --wheel-dir /tmp/silicams-wheel
+      - name: Inspect wheel namespace
+        run: |
+          python -c "import pathlib, zipfile; wheel=next(pathlib.Path('/tmp/silicams-wheel').glob('silicams-*.whl')); names=zipfile.ZipFile(wheel).namelist(); assert any(n.startswith('silicams/') for n in names); assert not any(n.startswith('porems/') for n in names)"

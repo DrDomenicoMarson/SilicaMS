@@ -1,304 +1,183 @@
-<img src="https://github.com/porems/PoreMS/blob/main/docsrc/pics/logo_text_sub.svg" width="60%">
+# SilicaMS
 
---------------------------------------
+[![Tests](https://github.com/DrDomenicoMarson/SilicaMS/actions/workflows/tests.yml/badge.svg)](https://github.com/DrDomenicoMarson/SilicaMS/actions/workflows/tests.yml)
+[![Documentation](https://github.com/DrDomenicoMarson/SilicaMS/actions/workflows/docs.yml/badge.svg)](https://github.com/DrDomenicoMarson/SilicaMS/actions/workflows/docs.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/PoreMS/PoreMS/blob/main/LICENSE)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14028652.svg)](https://doi.org/10.5281/zenodo.14028652)
-[![Build Status](https://github.com/PoreMS/PoreMS/actions/workflows/workflow.yml/badge.svg)](https://github.com/PoreMS/PoreMS/actions/workflows/workflow.yml)
-[![codecov](https://codecov.io/gh/PoreMS/PoreMS/branch/main/graph/badge.svg)](https://codecov.io/gh/PoreMS/PoreMS)
+SilicaMS builds periodic amorphous silica structures for molecular simulation.
+Its supported high-level workflow prepares bare or surface-functionalized
+silica slits, validates their connectivity and charge contracts, and writes
+coordinate, topology, and structured report files.
 
-## Documentation
+The package currently supports slit construction only. Molecule, connectivity,
+pattern, shape, and geometry primitives remain available through explicit
+submodules so future silica geometries can use the same domain and writer
+boundaries without restoring the former general-purpose constructors.
 
-Online documentation is available at [porems.github.io/PoreMS](https://porems.github.io/PoreMS/).
-
-<img src="https://github.com/porems/PoreMS/blob/main/docsrc/pics/pore.svg" width="60%">
-
-The docs include an example for generating [molecules](https://porems.github.io/PoreMS/molecule.html), the [slit preparation guide](https://porems.github.io/PoreMS/slit.html), and an [API reference](https://porems.github.io/PoreMS/api.html).
-
-The package is now focused on periodic amorphous silica slits. Reusable molecule,
-connectivity, matrix, pattern, shape, and geometry primitives remain available
-for future geometry-specific builders.
-
-## Dependencies
-
-PoreMS targets Python 3.14.
-
-Installation requires [numpy](https://numpy.org/), [pandas](https://pandas.pydata.org/), [matplotlib](https://matplotlib.org/), [seaborn](https://seaborn.pydata.org/), [PyYAML](https://pyyaml.org/) and [tqdm](https://tqdm.github.io/).
-
-## Bare and Grafted Amorphous Slit Workflows
-
-PoreMS provides a dedicated high-level workflow for periodic amorphous silica
-slits. The target is always given as `Q2/Q3/Q4/T2/T3` fractions over all Si
-atoms in the sample. Bare slits therefore use `t2_fraction=0.0` and
-`t3_fraction=0.0`, while functionalized slits can target both residual `Q`
-states and grafted `T` states in one configuration.
-
-### Bare slit preparation and export
-
-```python
-import porems as pms
-
-config = pms.AmorphousSlitConfig(
-    name="bare_amorphous_silica_slit",
-    slit_width_nm=7.0,
-    repeat_y=2,
-    surface_target=pms.ExperimentalSiliconStateTarget(
-        q2_fraction=66 / 40000,
-        q3_fraction=650 / 40000,
-    ),
-)
-
-result = pms.prepare_amorphous_slit_surface(config)
-print(result.report.final_surface)
-print(result.silica_topology.to_yaml())
-
-result = pms.write_bare_amorphous_slit("output/bare_amorphous_slit", config)
-print(result.bare_charge_diagnostics.is_neutral)
-```
-
-`ExperimentalSiliconStateTarget.q4_fraction` can be omitted. When omitted, it
-is derived as the remaining fraction after `Q2`, `Q3`, `T2`, and `T3`.
-
-By default, slit surface realization is deterministic. To generate alternative
-slits with the same requested `Q2/Q3/Q4/T2/T3` composition, provide
-`AmorphousSlitConfig.random_seed`. The same seed reproduces the same variant,
-while different seeds randomize chemically equivalent siloxane-bridge and
-graft-site choices:
-
-```python
-variant_config = pms.AmorphousSlitConfig(
-    name="bare_amorphous_silica_slit_seed_1001",
-    slit_width_nm=7.0,
-    repeat_y=2,
-    surface_target=pms.ExperimentalSiliconStateTarget(
-        q2_fraction=66 / 40000,
-        q3_fraction=650 / 40000,
-    ),
-    random_seed=1001,
-)
-```
-
-The TEPS example series can be rebuilt with seeded variants from the example
-directory:
-
-```bash
-cd scripts/TEPS_example
-/Users/dm/miniforge3/envs/mda/bin/python3 _0_create_slit.py --seed-base 1000
-```
-
-`prepare_amorphous_slit_surface(...)` returns a `SlitPreparationResult` with an
-attach-ready `SilicaSlit`, a structured `SlitPreparationReport`, and the resolved
-editable silica topology model used by slit topology export. The finalized bare
-writer produces a self-contained `<name>.itp` + `<name>.top` pair together with
-`<name>.gro`, optional inspection-oriented `.pdb` / `.cif` files, `<name>.yml`,
-and `<name>_report.json`.
-
-`AmorphousSlitBuilder(config)` is the public builder behind the high-level
-helpers. Its `prepare()` method returns the same bare result, while
-`prepare_functionalized(...)` creates a functionalized result from an explicit
-ligand and steric/progress settings. `SilicaSlit` exposes immutable binding-site
-snapshots, filtered available-site queries, explicit ligand attachment, cloning,
-and idempotent finalization without exposing the underlying scaffold or
-connectivity implementation.
-
-Structure and topology output are deliberately separate:
-
-- `StructureWriter` writes GRO, PDB/CONECT, mmCIF bonds, XYZ, LAMMPS, object
-  snapshots, and validates assembled connectivity.
-- `GromacsTopologyWriter` writes slit ITP/TOP files, charge diagnostics, and
-  retained topology/grid helpers.
-- `AntechamberWriter` writes Antechamber and `tleap` helper inputs for standalone
-  molecules.
-
-The former `Store`, `PoreKit`, and geometry-specific pore convenience builders
-have been removed. New pore geometries can be added later as dedicated builders
-that reuse the retained primitives and the same snapshot/writer boundary.
-
-### Inspecting or overriding the silica topology model
-
-```python
-import porems as pms
-
-silica_model = pms.default_silica_topology()
-print(silica_model.to_yaml())
-
-silica_model.atom_assignments.silanol_oxygen.charge = "-0.750000"
-
-config = pms.AmorphousSlitConfig(
-    name="bare_with_custom_silica_model",
-    silica_topology=silica_model,
-)
-```
-
-`default_silica_topology()` returns a fresh editable copy each time. The same
-model can be passed through `AmorphousSlitConfig.silica_topology` for both bare
-and functionalized slit workflows.
-
-### Functionalized (grafted) slit: coordinates only
-
-```python
-import porems as pms
-
-slit_config = pms.AmorphousSlitConfig(
-    name="functionalized_amorphous_silica_slit",
-    slit_width_nm=7.0,
-    repeat_y=1,
-    surface_target=pms.ExperimentalSiliconStateTarget(
-        q2_fraction=63 / 20000,
-        q3_fraction=648 / 20000,
-        t2_fraction=3 / 20000,
-        t3_fraction=4 / 20000,
-    ),
-)
-
-config = pms.FunctionalizedAmorphousSlitConfig(
-    slit_config=slit_config,
-    ligand=pms.SilaneAttachmentConfig(
-        molecule=pms.gen.tms(),
-        mount=0,
-        axis=(0, 1),
-    ),
-    progress_settings=pms.FunctionalizedSlitProgressConfig(),
-)
-
-result = pms.prepare_functionalized_amorphous_slit_surface(config)
-print(result.report.final_surface)
-
-result = pms.write_functionalized_amorphous_slit(
-    "output/functionalized_coordinates",
-    config,
-)
-print(result.charge_diagnostics)
-```
-
-This coordinate-only path requires only the graft fragment coordinates. The
-writer stores the finalized coordinates, YAML, and JSON report, but it does not
-write functionalized slit `.top` / `.itp` files unless `SilaneTopologyConfig`
-is supplied.
-
-### Functionalized slit full-topology export
-
-```python
-from pathlib import Path
-import porems as pms
-
-slit_config = pms.AmorphousSlitConfig(
-    name="functionalized_amorphous_silica_slit",
-    slit_width_nm=7.0,
-    repeat_y=1,
-    surface_target=pms.ExperimentalSiliconStateTarget(
-        q2_fraction=63 / 20000,
-        q3_fraction=648 / 20000,
-        t2_fraction=3 / 20000,
-        t3_fraction=4 / 20000,
-    ),
-)
-
-topology = pms.SilaneTopologyConfig(
-    itp_path=str(Path("path/to/tms_base_t3.itp")),
-    moleculetype_name="TMS",
-    geminal_cross_terms=pms.SilaneGeminalCrossTerms(
-        first_ligand_atom_name="O1",
-        geminal_oxygen_mount_ligand_angle=pms.GromacsAngleParameters.harmonic(
-            angle_deg=105.56,
-            force_constant=384.223760,
-        ),
-        geminal_dihedrals=(
-            pms.GeminalMountDihedralSpec(
-                fourth_atom_name="Si2",
-                function=1,
-                parameters=("0.00000", "1.60387", "3"),
-            ),
-        ),
-    ),
-)
-
-config = pms.FunctionalizedAmorphousSlitConfig(
-    slit_config=slit_config,
-    ligand=pms.SilaneAttachmentConfig(
-        molecule=pms.gen.tms(),
-        mount=0,
-        axis=(0, 1),
-        topology=topology,
-    ),
-)
-
-result = pms.write_functionalized_amorphous_slit(
-    "output/functionalized_full_topology",
-    config,
-)
-print(result.charge_diagnostics.is_valid)
-```
-
-Required inputs for functionalized full-topology export:
-
-- one self-contained flat GROMACS `.itp` file describing a base post-condensation `T3` fragment
-- atom names in that `.itp` matching the atom names in the configured `Molecule`
-- a base-fragment total charge matching the active silica model
-- explicit `SilaneGeminalCrossTerms` whenever the target includes `T2` sites
-
-Under the current default silica model, the expected base `T3` fragment charge
-is `+0.825`. If you pass a custom `silica_topology`, that charge target can
-change and should be checked against `default_silica_topology()` or your
-modified model before export.
-
-The current reference files `scripts/_top/tms.itp` and `scripts/_top/tmsg.itp`
-are useful examples of the required bonded-term layout, but they should be
-treated as parameter sources, not as automatically valid turnkey inputs for the
-strict functionalized slit exporter. The file you pass through
-`SilaneTopologyConfig.itp_path` must already satisfy the current naming and
-charge contract for your chosen `Molecule` and silica model.
-
+Documentation is published at
+[drdomenicomarson.github.io/SilicaMS](https://drdomenicomarson.github.io/SilicaMS/).
 
 ## Installation
 
-Create a Python 3.14 environment, then install the repository from the
-repository root in editable mode:
+SilicaMS 0.5.0 requires Python 3.14 or newer. Until the first public package
+release, install it from a clone:
 
-    pip install -r requirements.txt
-    pip install -e .[test]
+```bash
+git clone https://github.com/DrDomenicoMarson/SilicaMS.git
+cd SilicaMS
+/absolute/path/to/python3 -m pip install -e .
+```
 
-Use the repository directly in editable mode for local work.
+For a reproducible server deployment, install a specific Git commit:
 
+```bash
+/absolute/path/to/python3 -m pip install \
+    "SilicaMS @ git+https://github.com/DrDomenicoMarson/SilicaMS.git@COMMIT_SHA"
+```
 
-## Testing
+Install the development dependencies with:
 
-Run the test suite from the repository root after installing the test extra:
+```bash
+/absolute/path/to/python3 -m pip install -e '.[test,docs,dev]'
+```
 
-    pytest
+## Bare silica slit
 
+```python
+import silicams as sms
 
-## Development
+config = sms.AmorphousSlitConfig(
+    name="bare_silica_slit",
+    slit_width_nm=7.0,
+    repeat_y=2,
+    surface_target=sms.ExperimentalSiliconStateTarget(
+        q2_fraction=66 / 40000,
+        q3_fraction=650 / 40000,
+    ),
+)
 
-PoreMS development takes place on Github: [www.github.com/porems/PoreMS](https://github.com/porems/PoreMS)
+result = sms.write_bare_amorphous_slit("output/bare", config)
+print(result.report.final_surface)
+print(result.bare_charge_diagnostics.is_neutral)
+```
 
-The current repository/documentation version is exposed as `porems.__version__`.
+`ExperimentalSiliconStateTarget` always describes fractions over all silicon
+atoms. Omitted `q4_fraction` values are derived from the remaining
+`Q2/Q3/T2/T3` fractions. Builds are deterministic unless `random_seed` is set.
 
-Please submit any reproducible bugs you encounter to the [issue tracker](https://github.com/porems/PoreMS/issues).
+## Functionalized silica slit
 
+```python
+import silicams as sms
+from silicams.generic import tms
 
-## How to Cite PoreMS
+config = sms.FunctionalizedAmorphousSlitConfig(
+    slit_config=sms.AmorphousSlitConfig(
+        name="functionalized_silica_slit",
+        repeat_y=1,
+        surface_target=sms.ExperimentalSiliconStateTarget(
+            q2_fraction=65 / 957,
+            q3_fraction=651 / 957,
+            q4_fraction=239 / 957,
+            t2_fraction=1 / 957,
+            t3_fraction=1 / 957,
+            alpha_override=1.0,
+        ),
+    ),
+    ligand=sms.SilaneAttachmentConfig(
+        molecule=tms(),
+        mount=0,
+        axis=(0, 1),
+    ),
+)
 
-When citing PoreMS please use the following: **Kraus et al., Molecular Simulation, 2021, DOI: [10.1080/08927022.2020.1871478](https://doi.org/10.1080/08927022.2020.1871478)**
+result = sms.write_functionalized_amorphous_slit(
+    "output/functionalized",
+    config,
+)
+print(result.report.final_surface)
+```
 
-Additionaly, to assure reproducability of the generated pore systems, please cite the **Zenodo DOI** corresponding to the used PoreMS version. (Current DOI is listed in the badges.)
+Coordinate-only functionalized output is supported without a ligand ITP.
+Pass `SilaneTopologyConfig` with a self-contained flat ligand ITP when a full
+functionalized GROMACS ITP/TOP pair is required. Junction terms are controlled
+through `AmorphousSlitConfig.silica_topology` and
+`sms.default_silica_topology()`.
 
-## Published Work
-* Probst et al., 2025. Ring-Expansion Metathesis Polymerization under Confinement. Journal of the American Chemical Society, doi:[doi.org/10.1021/jacs.4c18171](https://doi.org/10.1021/jacs.4c18171)
-  - Data-Repository: doi:[]()
-* Högler et al., 2024. Influence of Ionic Liquid Film Thickness and Flow Rate on Macrocyclization Efficiency and Selectivity in Supported Ionic Liquid-Liquid Phase Catalysis. Chemistry – A European Journal, doi:[doi.org/10.1002/chem.202403237](https://doi.org/10.1002/chem.202403237)
-  - Data-Repository: doi:[10.18419/DARUS-4063](https://doi.org/10.18419/DARUS-4063)
-* Nguyen et al., 2024. Effects of Surfaces and Confinement on Formic Acid Dehydrogenation Catalyzed by an Immobilized Ru–H Complex: Insights from Molecular Simulation and Neutron Scattering. ACS Catalysis, doi:[doi.org/10.1021/acscatal.4c02626](https://doi.org/10.1021/acscatal.4c02626)
-  - Data-Repository: doi:[doi.org/10.18419/DARUS-3584](https://doi.org/10.18419/DARUS-3584)
-* Kraus et al., 2023. Axial Diffusion in Liquid-Saturated Cylindrical Silica Pore Models. The Journal of Physical Chemistry C, doi:[10.1021/acs.jpcc.3c01974](https://doi.org/10.1021/acs.jpcc.3c01974).
-  - Data-Repository: doi:[10.18419/darus-3067](https://doi.org/10.18419/darus-3067)
-* Kraus and Hansen, 2022. An atomistic view on the uptake of aromatic compounds by cyclodextrin immobilized on mesoporous silica. Adsorption, doi:[10.1007/s10450-022-00356-w](https://doi.org/10.1007/s10450-022-00356-w).
-  - Data-Repository: doi:[10.18419/darus-2154](https://doi.org/10.18419/darus-2154)
-* Kraus et al., 2021. PoreMS: a software tool for generating silica pore models with user-defined surface functionalisation and pore dimensions. Molecular Simulation, 47(4), pp.306-316, doi:[10.1080/08927022.2020.1871478](https://doi.org/10.1080/08927022.2020.1871478).
-  - Data-Repository: doi:[10.18419/darus-1170](https://doi.org/10.18419/darus-1170)
-* Ziegler et al., 2021. Confinement Effects for Efficient Macrocyclization Reactions with Supported Cationic Molybdenum Imido Alkylidene N-Heterocyclic Carbene Complexes. ACS Catalysis, 11(18), pp. 11570-11578, doi:[10.1021/acscatal.1c03057](https://doi.org/10.1021/acscatal.1c03057)
-  - Data-Repository: doi:[10.18419/darus-1752](https://doi.org/10.18419/darus-1752)
-* Kobayashi et al., 2021. Confined Ru-catalysts in a Two-phase Heptane/Ionic Liquid Solution: Modeling Aspects. ChemCatChem, 13(2), pp.739-746, doi:[10.1002/cctc.202001596](https://doi.org/10.1002/cctc.202001596).
-  - Data-Repository: doi:[10.18419/darus-1138](https://doi.org/10.18419/darus-1138)
-* Ziegler et al., 2019. Olefin Metathesis in Confined Geometries: A Biomimetic Approach toward Selective Macrocyclization. Journal of the American Chemical Society, 141(48), pp.19014-19022, doi:[10.1021/jacs.9b08776](https://doi.org/10.1021/jacs.9b08776).
-  - Data-Repository: doi:[10.18419/darus-477](https://doi.org/10.18419/darus-477)
+## Slit filling and density
+
+The packaged command-line interfaces are:
+
+```bash
+silicams-fill-slit --help
+silicams-slit-density --help
+```
+
+The equivalent Python APIs are `sms.fill_slit(...)` and
+`sms.estimate_guest_density(...)`. Density reports include reusable raw
+numerical data; plotting workflows must also export their plot data as CSV.
+
+## Output and extension APIs
+
+The high-level write functions finalize one `SilicaSlit`, create one immutable
+snapshot, and share it between:
+
+- `StructureWriter` for GRO, PDB/CONECT, mmCIF bonds, XYZ, LAMMPS, validation,
+  and structural object output.
+- `GromacsTopologyWriter` for charge diagnostics and slit ITP/TOP output.
+- `AntechamberWriter` for standalone molecule helper inputs.
+
+Object output is opt-in. SilicaMS object files contain the `silicams` module
+namespace; object files serialized by PoreMS are intentionally unsupported.
+
+Reusable lower-level components are imported explicitly, for example:
+
+```python
+from silicams.molecule import Molecule
+from silicams.pattern import AlphaCristobalit
+from silicams.shape import Cylinder
+```
+
+These primitives do not imply that cylindrical pores are currently supported.
+A future pore geometry should be introduced through a dedicated builder using
+the existing `SilicaSlit`-style domain and shared writer snapshot.
+
+## Development and verification
+
+Use the project environment directly:
+
+```bash
+/Users/dm/miniforge3/envs/md/bin/python3 -m pytest --cov=silicams
+/Users/dm/miniforge3/envs/md/bin/python3 -m sphinx -W -b html docs docs/_build/html
+/Users/dm/miniforge3/envs/md/bin/python3 -m pip wheel . \
+    --no-deps --no-build-isolation --wheel-dir /tmp/silicams-wheel
+```
+
+The `examples/` directory contains minimal bare, functionalized, and filling
+workflows.
+
+## Origin and attribution
+
+SilicaMS began as a modified fork of
+[PoreMS](https://github.com/PoreMS/PoreMS), originally developed by Hamzeh
+Kraus and the PoreMS contributors. This repository preserves the complete
+upstream commit history but contains substantial changes focused on periodic
+amorphous and functionalized silica slits. SilicaMS is independently
+maintained by Domenico Marson and is not an official continuation endorsed by
+the original PoreMS maintainers.
+
+The inherited construction methods should continue to acknowledge:
+
+> Kraus et al., *PoreMS: a software tool for generating silica pore models
+> with user-defined surface functionalisation and pore dimensions*, Molecular
+> Simulation 47 (2021), 306–316.
+> [doi:10.1080/08927022.2020.1871478](https://doi.org/10.1080/08927022.2020.1871478)
+
+That DOI and the historical PoreMS Zenodo records identify the original work,
+not a SilicaMS release. See [NOTICE.md](NOTICE.md) and
+[CITATION.cff](CITATION.cff) for provenance and citation metadata.
+
+## License
+
+SilicaMS is distributed under the GNU General Public License, version 3. See
+[LICENSE](LICENSE).

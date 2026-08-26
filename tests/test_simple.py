@@ -5,9 +5,31 @@ import warnings
 import matplotlib.pyplot as plt
 import pytest
 
-import porems as pms
-import porems.writers.common as store_mod
-from porems.pore import Pore
+import silicams as sms
+import silicams.database as database
+import silicams.generic as generic
+import silicams.geometry as geometry
+import silicams.utils as utils
+import silicams.writers.common as snapshot_mod
+from silicams.atom import Atom
+from silicams.connectivity import (
+    AssembledStructureGraph,
+    ConnectivityValidationReport,
+    GraphBond,
+)
+from silicams.dice import Dice
+from silicams.matrix import Matrix
+from silicams.pattern import AlphaCristobalit, BetaCristobalit
+from silicams.shape import (
+    Cone,
+    ConeConfig,
+    Cuboid,
+    CuboidConfig,
+    Cylinder,
+    CylinderConfig,
+    Sphere,
+    SphereConfig,
+)
 
 
 pytestmark = pytest.mark.usefixtures("module_workspace")
@@ -24,30 +46,30 @@ class TestUserModel:
         text_copy_link = "output/test/test_copy.txt"
         pickle_link = "output/test/test.pkl"
 
-        pms.utils.mkdirp("output/test")
+        utils.mkdirp("output/test")
 
         with open(text_link, "w") as file_out:
             file_out.write("TEST")
-        pms.utils.copy(text_link, text_copy_link)
-        pms.utils.replace(text_copy_link, "TEST", "DOTA")
+        utils.copy(text_link, text_copy_link)
+        utils.replace(text_copy_link, "TEST", "DOTA")
         with open(text_copy_link, "r") as file_in:
             for line in file_in:
                 assert line == "DOTA\n"
 
-        assert pms.utils.column([[1, 1, 1], [2, 2, 2]]) == [[1, 2], [1, 2], [1, 2]]
+        assert utils.column([[1, 1, 1], [2, 2, 2]]) == [[1, 2], [1, 2], [1, 2]]
 
-        pms.utils.save([1, 1, 1], pickle_link)
-        assert pms.utils.load(pickle_link) == [1, 1, 1]
+        utils.save([1, 1, 1], pickle_link)
+        assert utils.load(pickle_link) == [1, 1, 1]
 
-        assert round(pms.utils.mumol_m2_to_mols(3, 100), 4) == 180.66
-        assert round(pms.utils.mols_to_mumol_m2(180, 100), 4) == 2.989
-        assert round(pms.utils.mmol_g_to_mumol_m2(0.072, 512), 2) == 0.14
-        assert round(pms.utils.mmol_l_to_mols(30, 1000), 4) == 18.066
-        assert round(pms.utils.mols_to_mmol_l(18, 1000), 4) == 29.8904
+        assert round(utils.mumol_m2_to_mols(3, 100), 4) == 180.66
+        assert round(utils.mols_to_mumol_m2(180, 100), 4) == 2.989
+        assert round(utils.mmol_g_to_mumol_m2(0.072, 512), 2) == 0.14
+        assert round(utils.mmol_l_to_mols(30, 1000), 4) == 18.066
+        assert round(utils.mols_to_mmol_l(18, 1000), 4) == 29.8904
 
         print()
-        pms.utils.toc(pms.utils.tic(), message="Test", is_print=True)
-        assert round(pms.utils.toc(pms.utils.tic(), is_print=True)) == 0
+        utils.toc(utils.tic(), message="Test", is_print=True)
+        assert round(utils.toc(utils.tic(), is_print=True)) == 0
 
 
     ############
@@ -59,34 +81,34 @@ class TestUserModel:
 
         print()
 
-        assert round(pms.geom.dot_product(vec_a, vec_b), 4) == 7
-        assert round(pms.geom.length(vec_a), 4) == 2.4495
-        assert [round(x, 4) for x in pms.geom.vector(vec_a, vec_b)] == [-1, 2, 0]
+        assert round(geometry.dot_product(vec_a, vec_b), 4) == 7
+        assert round(geometry.length(vec_a), 4) == 2.4495
+        assert [round(x, 4) for x in geometry.vector(vec_a, vec_b)] == [-1, 2, 0]
         with pytest.raises(ValueError, match="Wrong dimensions"):
-            pms.geom.vector([0, 1], [0, 0, 0])
-        assert [round(x, 4) for x in pms.geom.unit(vec_a)] == [0.4082, 0.4082, 0.8165]
-        assert [round(x, 4) for x in pms.geom.cross_product(vec_a, vec_b)] == [-4, -2, 3]
-        assert round(pms.geom.angle(vec_a, vec_b), 4) == 37.5714
-        assert round(pms.geom.angle_polar(vec_a), 4) == 0.7854
-        assert round(pms.geom.angle_azi(vec_b), 4) == 0.9828
-        assert round(pms.geom.angle_azi([0, 0, 0]), 4) == 1.5708
-        assert [round(x, 4) for x in pms.geom.main_axis(1)] == [1, 0, 0]
-        assert [round(x, 4) for x in pms.geom.main_axis(2)] == [0, 1, 0]
-        assert [round(x, 4) for x in pms.geom.main_axis(3)] == [0, 0, 1]
-        assert [round(x, 4) for x in pms.geom.main_axis("x")] == [1, 0, 0]
-        assert [round(x, 4) for x in pms.geom.main_axis("y")] == [0, 1, 0]
-        assert [round(x, 4) for x in pms.geom.main_axis("z")] == [0, 0, 1]
+            geometry.vector([0, 1], [0, 0, 0])
+        assert [round(x, 4) for x in geometry.unit(vec_a)] == [0.4082, 0.4082, 0.8165]
+        assert [round(x, 4) for x in geometry.cross_product(vec_a, vec_b)] == [-4, -2, 3]
+        assert round(geometry.angle(vec_a, vec_b), 4) == 37.5714
+        assert round(geometry.angle_polar(vec_a), 4) == 0.7854
+        assert round(geometry.angle_azi(vec_b), 4) == 0.9828
+        assert round(geometry.angle_azi([0, 0, 0]), 4) == 1.5708
+        assert [round(x, 4) for x in geometry.main_axis(1)] == [1, 0, 0]
+        assert [round(x, 4) for x in geometry.main_axis(2)] == [0, 1, 0]
+        assert [round(x, 4) for x in geometry.main_axis(3)] == [0, 0, 1]
+        assert [round(x, 4) for x in geometry.main_axis("x")] == [1, 0, 0]
+        assert [round(x, 4) for x in geometry.main_axis("y")] == [0, 1, 0]
+        assert [round(x, 4) for x in geometry.main_axis("z")] == [0, 0, 1]
         with pytest.raises(ValueError, match="Wrong axis definition"):
-            pms.geom.main_axis("h")
+            geometry.main_axis("h")
         with pytest.raises(ValueError, match="Wrong axis definition"):
-            pms.geom.main_axis(100)
+            geometry.main_axis(100)
         with pytest.raises(ValueError, match="Wrong axis definition"):
-            pms.geom.main_axis(0.1)
-        assert [round(x, 4) for x in pms.geom.rotate(vec_a, "x", 90, True)] == [1.0, -2.0, 1.0]
+            geometry.main_axis(0.1)
+        assert [round(x, 4) for x in geometry.rotate(vec_a, "x", 90, True)] == [1.0, -2.0, 1.0]
         with pytest.raises(ValueError, match="Wrong vector dimensions"):
-            pms.geom.rotate(vec_a, [0, 1, 2, 3], 90, True)
+            geometry.rotate(vec_a, [0, 1, 2, 3], 90, True)
         with pytest.raises(ValueError, match="Wrong axis definition"):
-            pms.geom.rotate(vec_a, "h", 90, True)
+            geometry.rotate(vec_a, "h", 90, True)
 
 
     ############
@@ -94,22 +116,22 @@ class TestUserModel:
     ############
     def test_database(self):
         print()
-        assert pms.db.get_mass("H") == 1.0079
-        assert pms.db.get_element("Si") == "Si"
-        assert pms.db.get_element("Ci") == "C"
-        assert pms.db.get_pdb_element("CA") == "C"
-        assert pms.db.get_pdb_element("CD1") == "C"
-        assert pms.db.get_pdb_element("SI1") == "Si"
-        assert pms.db.get_covalent_radius("OM1") == pytest.approx(0.066, abs=1e-7)
+        assert database.get_mass("H") == 1.0079
+        assert database.get_element("Si") == "Si"
+        assert database.get_element("Ci") == "C"
+        assert database.get_pdb_element("CA") == "C"
+        assert database.get_pdb_element("CD1") == "C"
+        assert database.get_pdb_element("SI1") == "Si"
+        assert database.get_covalent_radius("OM1") == pytest.approx(0.066, abs=1e-7)
         with pytest.raises(ValueError, match="Atom name not found"):
-            pms.db.get_mass("DOTA")
+            database.get_mass("DOTA")
 
 
     ########
     # Atom #
     ########
     def test_atom(self):
-        atom = pms.Atom([0, 0, 0], "O", "O", 5)
+        atom = Atom([0, 0, 0], "O", "O", 5)
 
         atom.set_pos([0.0, 0.1, 0.2])
         atom.set_atom_type("H")
@@ -128,14 +150,14 @@ class TestUserModel:
     # Molecule #
     ############
     def test_molecule_loading(self):
-        mol_gro = pms.Molecule(inp="data/benzene.gro")
-        mol_pdb = pms.Molecule(inp="data/benzene.pdb")
-        mol_mol2 = pms.Molecule(inp="data/benzene.mol2")
+        mol_gro = sms.Molecule(inp="data/benzene.gro")
+        mol_pdb = sms.Molecule(inp="data/benzene.pdb")
+        mol_mol2 = sms.Molecule(inp="data/benzene.mol2")
 
-        mol_atom = pms.Molecule(inp=mol_mol2.get_atom_list())
-        mol_concat = pms.Molecule(inp=[mol_gro, mol_pdb])
+        mol_atom = sms.Molecule(inp=mol_mol2.get_atom_list())
+        mol_concat = sms.Molecule(inp=[mol_gro, mol_pdb])
 
-        mol_append = pms.Molecule(inp="data/benzene.gro")
+        mol_append = sms.Molecule(inp="data/benzene.gro")
         mol_append.append(mol_gro)
 
         pos_gro = [[round(x, 4) for x in col] for col in mol_gro.column_pos()]
@@ -157,7 +179,7 @@ class TestUserModel:
 
         print()
         with pytest.raises(ValueError, match="Unsupported filetype"):
-            pms.Molecule(inp="data/benzene.DOTA")
+            sms.Molecule(inp="data/benzene.DOTA")
 
     def test_molecule_loads_pdb_conect_and_preserves_bonds(self):
         pdb_path = os.path.join("output", "bonded_probe.pdb")
@@ -172,10 +194,10 @@ class TestUserModel:
                 "TER\nEND\n"
             )
 
-        mol = pms.Molecule(inp=pdb_path)
+        mol = sms.Molecule(inp=pdb_path)
         assert mol.get_bonds() == [(0, 1), (1, 2)]
 
-        graph = pms.StructureWriter(mol, "output").assembled_graph(use_atom_names=True)
+        graph = sms.StructureWriter(mol, "output").assembled_graph(use_atom_names=True)
         assert len(graph.bonds) == 2
         assert all(bond.provenance == "ligand_explicit" for bond in graph.bonds)
 
@@ -194,13 +216,13 @@ class TestUserModel:
                 "TER\nEND\n"
             )
 
-        mol = pms.Molecule(inp=pdb_path)
+        mol = sms.Molecule(inp=pdb_path)
 
         assert [mol.get_atom_type(index) for index in range(mol.get_num())] == ["Si", "C", "C", "C"]
         assert mol.get_bonds() == [(0, 1), (1, 2), (2, 3)]
 
     def test_molecule_bond_graph_is_preserved_through_edits(self):
-        mol = pms.Molecule()
+        mol = sms.Molecule()
         mol.add("Si", [0.0, 0.0, 0.0], name="SI1")
         mol.add("O", 0, r=0.164, name="O1")
         mol.add("H", 1, r=0.098, name="H1")
@@ -217,7 +239,7 @@ class TestUserModel:
         assert mol.get_bonds() == [(0, 1)]
 
     def test_molecule_properties(self):
-        mol = pms.Molecule(inp="data/benzene.gro")
+        mol = sms.Molecule(inp="data/benzene.gro")
 
         assert mol.pos(0) == [0.0935, 0.0000, 0.3143]
         assert [round(x, 4) for x in mol.bond(0, 1)] == [0.1191, 0.0, 0.0687]
@@ -227,7 +249,7 @@ class TestUserModel:
         assert [round(x, 4) for x in mol.com()] == [0.2126, 0.0, 0.2455]
 
     def test_molecule_editing(self):
-        mol = pms.Molecule(inp="data/benzene.gro")
+        mol = sms.Molecule(inp="data/benzene.gro")
 
         mol.translate([0, 0.1, 0.2])
         assert [round(x, 4) for x in mol.pos(3)] == [0.3317, 0.1000, 0.3768]
@@ -263,7 +285,7 @@ class TestUserModel:
             mol.part_angle([0, 0], [0, 1, 2], 1, 45, 1)
 
     def test_molecule_creation(self):
-        mol = pms.Molecule()
+        mol = sms.Molecule()
 
         mol.add("C", [0, 0.1, 0.2])
         mol.add("C", 0, r=0.1, theta=90)
@@ -285,7 +307,7 @@ class TestUserModel:
         assert mol.get_atom_list()[0].get_residue() == 1
 
     def test_molecule_set_get(self):
-        mol = pms.Molecule()
+        mol = sms.Molecule()
 
         mol.set_name("test_mol")
         mol.set_short("TMOL")
@@ -302,7 +324,7 @@ class TestUserModel:
         assert mol.get_mass() == 6
 
     def test_molecule_representation(self):
-        mol = pms.Molecule()
+        mol = sms.Molecule()
         mol.add("H", [0.0, 0.1, 0.2], name="HO1")
 
         assert mol.__str__() == "   Residue Name Type    x    y    z\n0        0  HO1    H  0.0  0.1  0.2"
@@ -312,22 +334,22 @@ class TestUserModel:
     # Generic #
     ###########
     def test_generic(self):
-        assert [round(x, 4) for x in pms.gen.alkane(10, "decane", "DEC").pos(5)] == [0.0472, 0.1028, 0.7170]
-        assert [round(x, 4) for x in pms.gen.alkane(1, "methane", "MET").pos(0)] == [0.0514, 0.0890, 0.0363]
-        assert [round(x, 4) for x in pms.gen.alcohol(10, "decanol", "DCOL").pos(5)] == [0.0363, 0.1028, 0.7170]
-        assert [round(x, 4) for x in pms.gen.alcohol(1, "methanol", "MEOL").pos(0)] == [0.0715, 0.0890, 0.0363]
-        assert [round(x, 4) for x in pms.gen.ketone(10, 5, "decanone", "DCON").pos(5)] == [0.0472, 0.1028, 0.7170]
-        assert [round(x, 4) for x in  pms.gen.tms(separation=30).pos(5)] == [0.0273, 0.0472, 0.4525]
-        assert [round(x, 4) for x in  pms.gen.tms(is_si=False).pos(5)] == [0.0273, 0.0472, 0.4976]
-        assert [round(x, 4) for x in  pms.gen.silanol().pos(0)] == [0.000, 0.000, 0.000]
+        assert [round(x, 4) for x in generic.alkane(10, "decane", "DEC").pos(5)] == [0.0472, 0.1028, 0.7170]
+        assert [round(x, 4) for x in generic.alkane(1, "methane", "MET").pos(0)] == [0.0514, 0.0890, 0.0363]
+        assert [round(x, 4) for x in generic.alcohol(10, "decanol", "DCOL").pos(5)] == [0.0363, 0.1028, 0.7170]
+        assert [round(x, 4) for x in generic.alcohol(1, "methanol", "MEOL").pos(0)] == [0.0715, 0.0890, 0.0363]
+        assert [round(x, 4) for x in generic.ketone(10, 5, "decanone", "DCON").pos(5)] == [0.0472, 0.1028, 0.7170]
+        assert [round(x, 4) for x in  generic.tms(separation=30).pos(5)] == [0.0273, 0.0472, 0.4525]
+        assert [round(x, 4) for x in  generic.tms(is_si=False).pos(5)] == [0.0273, 0.0472, 0.4976]
+        assert [round(x, 4) for x in  generic.silanol().pos(0)] == [0.000, 0.000, 0.000]
 
         print()
         with pytest.raises(ValueError, match="too small for ketones"):
-            pms.gen.ketone(2, 0)
+            generic.ketone(2, 0)
 
 
     #########
-    # Store #
+    # Writers #
     #########
     def test_hybrid36_helpers(self):
         reference_vectors = (
@@ -344,28 +366,28 @@ class TestUserModel:
         )
 
         for width, value, token in reference_vectors:
-            assert store_mod._encode_hybrid36(width, value) == token
-            assert store_mod._decode_hybrid36(width, token) == value
+            assert snapshot_mod._encode_hybrid36(width, value) == token
+            assert snapshot_mod._decode_hybrid36(width, token) == value
 
         with pytest.raises(ValueError, match="exceeds the hybrid-36 range"):
-            store_mod._encode_hybrid36(4, store_mod._hybrid36_max_value(4) + 1)
+            snapshot_mod._encode_hybrid36(4, snapshot_mod._hybrid36_max_value(4) + 1)
 
     def test_pdb_writer_uses_hybrid36_for_overflowed_ids(self):
-        mol = pms.Molecule("overflow_writer", "OVF")
+        mol = sms.Molecule("overflow_writer", "OVF")
         mol.add("C", [0.0, 0.0, 0.0], name="C1")
         mol.add("C", [0.1, 0.0, 0.0], name="C2")
 
-        store = pms.StructureWriter(mol, "output")
+        store = sms.StructureWriter(mol, "output")
         atom_records = [
-            store_mod._StructureAtomRecord(
+            snapshot_mod._StructureAtomRecord(
                 serial=99999,
-                pdb_serial_token=store_mod._encode_hybrid36(5, 99999),
+                pdb_serial_token=snapshot_mod._encode_hybrid36(5, 99999),
                 molecule_index=0,
                 local_atom_index=0,
                 residue_name="TEPS",
                 pdb_residue_name="TEP",
                 residue_id=9999,
-                pdb_residue_id_token=store_mod._encode_hybrid36(4, 9999),
+                pdb_residue_id_token=snapshot_mod._encode_hybrid36(4, 9999),
                 atom_name="C1",
                 atom_type="C",
                 position=(0.0, 0.0, 0.0),
@@ -375,15 +397,15 @@ class TestUserModel:
                 cif_asym_id="A9999",
                 cif_label_seq_id="1",
             ),
-            store_mod._StructureAtomRecord(
+            snapshot_mod._StructureAtomRecord(
                 serial=100000,
-                pdb_serial_token=store_mod._encode_hybrid36(5, 100000),
+                pdb_serial_token=snapshot_mod._encode_hybrid36(5, 100000),
                 molecule_index=0,
                 local_atom_index=1,
                 residue_name="TEPS",
                 pdb_residue_name="TEP",
                 residue_id=10000,
-                pdb_residue_id_token=store_mod._encode_hybrid36(4, 10000),
+                pdb_residue_id_token=snapshot_mod._encode_hybrid36(4, 10000),
                 atom_name="C2",
                 atom_type="C",
                 position=(0.1, 0.0, 0.0),
@@ -394,27 +416,27 @@ class TestUserModel:
                 cif_label_seq_id="1",
             ),
         ]
-        graph = pms.AssembledStructureGraph.from_bonds(
+        graph = AssembledStructureGraph.from_bonds(
             (99999, 100000),
-            [pms.GraphBond(99999, 100000, "ligand_explicit")],
+            [GraphBond(99999, 100000, "ligand_explicit")],
         )
-        store._structure_export_cache[True] = store_mod._StructureExportCache(
+        store._structure_export_cache[True] = snapshot_mod._StructureExportCache(
             atom_records=atom_records,
             molecule_serials=[[99999, 100000]],
             residue_alias_records=[
-                store_mod._PdbResidueAliasRecord(full_name="TEPS", pdb_name="TEP")
+                snapshot_mod._PdbResidueAliasRecord(full_name="TEPS", pdb_name="TEP")
             ],
             entity_records=[
-                store_mod._CifEntityRecord(entity_id="1", residue_name="TEPS")
+                snapshot_mod._CifEntityRecord(entity_id="1", residue_name="TEPS")
             ],
             struct_asym_records=[
-                store_mod._CifStructAsymRecord(
+                snapshot_mod._CifStructAsymRecord(
                     asym_id="A9999",
                     entity_id="1",
                     residue_id=9999,
                     residue_name="TEPS",
                 ),
-                store_mod._CifStructAsymRecord(
+                snapshot_mod._CifStructAsymRecord(
                     asym_id="A10000",
                     entity_id="1",
                     residue_id=10000,
@@ -437,32 +459,32 @@ class TestUserModel:
         assert pdb_lines[1][6:11] == "A0000"
         assert pdb_lines[0][22:26] == "9999"
         assert pdb_lines[1][22:26] == "A000"
-        assert store_mod._decode_hybrid36(5, pdb_lines[1][6:11]) == 100000
-        assert store_mod._decode_hybrid36(4, pdb_lines[1][22:26]) == 10000
+        assert snapshot_mod._decode_hybrid36(5, pdb_lines[1][6:11]) == 100000
+        assert snapshot_mod._decode_hybrid36(4, pdb_lines[1][22:26]) == 10000
         assert pdb_lines[2].startswith("CONECT")
         assert "A0000" in pdb_lines[2]
 
-    def test_store(self):
-        mol = pms.Molecule(inp="data/benzene.gro")
+    def test_writers(self):
+        mol = sms.Molecule(inp="data/benzene.gro")
 
         mol.set_atom_residue(1, 1)
 
-        pms.AntechamberWriter(mol, "output").write(
+        sms.AntechamberWriter(mol, "output").write(
             "store_job",
             "store_master.job",
         )
-        pms.StructureWriter(mol, "output").write_object("store_obj.obj")
-        pms.StructureWriter(mol, "output").write_gro("store_gro.gro", True)
-        pms.StructureWriter(mol, "output").write_pdb("store_pdb.pdb", True)
-        pms.StructureWriter(mol, "output").write_cif("store_cif.cif", True)
-        pms.StructureWriter(mol, "output").write_xyz("store_xyz.xyz")
-        pms.StructureWriter(mol, "output").write_lammps("store_lmp.lmp")
-        pms.GromacsTopologyWriter(mol, "output").write_grid_itp(
+        sms.StructureWriter(mol, "output").write_object("store_obj.obj")
+        sms.StructureWriter(mol, "output").write_gro("store_gro.gro", True)
+        sms.StructureWriter(mol, "output").write_pdb("store_pdb.pdb", True)
+        sms.StructureWriter(mol, "output").write_cif("store_cif.cif", True)
+        sms.StructureWriter(mol, "output").write_xyz("store_xyz.xyz")
+        sms.StructureWriter(mol, "output").write_lammps("store_lmp.lmp")
+        sms.GromacsTopologyWriter(mol, "output").write_grid_itp(
             "store_grid.itp"
         )
 
-        object_snapshot = pms.utils.load("output/store_obj.obj")
-        assert isinstance(object_snapshot, store_mod.StructureSnapshot)
+        object_snapshot = utils.load("output/store_obj.obj")
+        assert isinstance(object_snapshot, snapshot_mod.StructureSnapshot)
         assert object_snapshot.has_assembled_export
         assert len(object_snapshot.atom_order) == mol.get_num()
 
@@ -475,30 +497,30 @@ class TestUserModel:
             pdb_text = file_in.read()
         assert "CONECT" in pdb_text
 
-        graph = pms.StructureWriter(mol, "output").assembled_graph(use_atom_names=True)
-        assert isinstance(graph, pms.AssembledStructureGraph)
+        graph = sms.StructureWriter(mol, "output").assembled_graph(use_atom_names=True)
+        assert isinstance(graph, AssembledStructureGraph)
         assert len(graph.bonds) == 12
         assert all(bond.provenance == "ligand_inferred" for bond in graph.bonds)
         assert len(graph.angles) > 0
 
-        report = pms.StructureWriter(mol, "output").validate_connectivity(use_atom_names=True)
-        assert isinstance(report, pms.ConnectivityValidationReport)
+        report = sms.StructureWriter(mol, "output").validate_connectivity(use_atom_names=True)
+        assert isinstance(report, ConnectivityValidationReport)
         assert report.is_valid
 
         print()
         with pytest.raises(TypeError, match="Molecule or StructureSnapshot"):
-            pms.StructureWriter({})
+            sms.StructureWriter({})
         with pytest.raises(TypeError, match="silica-slit snapshot"):
-            pms.GromacsTopologyWriter(mol).write_legacy_topology()
+            sms.GromacsTopologyWriter(mol).write_helper_topology()
 
     def test_connectivity_validation_reports_invalid_local_valence(self):
-        mol = pms.Molecule("invalid_valence", "IVL")
+        mol = sms.Molecule("invalid_valence", "IVL")
         mol.add("O", [0.0, 0.0, 0.0], name="O1")
         mol.add("H", 0, r=0.098, name="H1")
         mol.add("H", 0, r=0.098, theta=120, name="H2")
         mol.add("H", 0, r=0.098, theta=240, name="H3")
 
-        store = pms.StructureWriter(mol, "output")
+        store = sms.StructureWriter(mol, "output")
         report = store.validate_connectivity(use_atom_names=True)
 
         assert not (report.is_valid)
@@ -514,14 +536,14 @@ class TestUserModel:
             store.write_gro("invalid_valence_strict.gro", use_atom_names=True, validate_connectivity="strict")
 
     def test_connectivity_validation_allows_stretched_but_element_sane_bonds(self):
-        mol = pms.Molecule("stretched_silica_fragment", "SSF")
+        mol = sms.Molecule("stretched_silica_fragment", "SSF")
         mol.add("Si", [0.0, 0.0, 0.0], name="SI1")
         mol.add("O", [0.32, 0.0, 0.0], name="O1")
         mol.add("H", [0.50, 0.0, 0.0], name="H1")
         mol.add_bond(0, 1)
         mol.add_bond(1, 2)
 
-        report = pms.StructureWriter(mol, "output").validate_connectivity(use_atom_names=True)
+        report = sms.StructureWriter(mol, "output").validate_connectivity(use_atom_names=True)
 
         assert report.is_valid
         assert not any(
@@ -530,11 +552,11 @@ class TestUserModel:
         )
 
     def test_structure_writers_normalize_slx_to_exported_om(self):
-        mol = pms.Molecule("siloxane_bridge_probe", "SLX")
+        mol = sms.Molecule("siloxane_bridge_probe", "SLX")
         mol.set_box([1.0, 1.0, 1.0])
         mol.add("O", [0.0, 0.0, 0.0], name="OM1")
 
-        store = pms.StructureWriter(mol, "output")
+        store = sms.StructureWriter(mol, "output")
         store.write_gro(
             "siloxane_bridge_probe.gro",
             use_atom_names=True,
@@ -566,14 +588,14 @@ class TestUserModel:
         assert " OM " in cif_text
 
     def test_connectivity_validation_normalizes_siloxane_bridges_to_framework_oxygen_rules(self):
-        mol = pms.Molecule("invalid_siloxane_bridge", "SLX")
+        mol = sms.Molecule("invalid_siloxane_bridge", "SLX")
         mol.add("O", [0.0, 0.0, 0.0], name="OM1")
         mol.add("Si", [0.16, 0.0, 0.0], name="SI1")
         mol.add("H", [-0.10, 0.0, 0.0], name="H1")
         mol.add_bond(0, 1)
         mol.add_bond(0, 2)
 
-        report = pms.StructureWriter(mol, "output").validate_connectivity(use_atom_names=True)
+        report = sms.StructureWriter(mol, "output").validate_connectivity(use_atom_names=True)
 
         assert not report.is_valid
         assert any(
@@ -582,9 +604,9 @@ class TestUserModel:
         )
 
     def test_pdb_uses_hybrid36_when_fixed_width_limits_are_exceeded(self):
-        atom = pms.Molecule("single_atom", "SIN")
+        atom = sms.Molecule("single_atom", "SIN")
         atom.add("H", [0.0, 0.0, 0.0], name="H1")
-        store = pms.StructureWriter(atom, "output")
+        store = sms.StructureWriter(atom, "output")
         store._mols = [atom] * 100000
 
         cache = store._collect_structure_records(use_atom_names=True)
@@ -593,147 +615,46 @@ class TestUserModel:
 
         assert records[9998].pdb_residue_id_token == "9999"
         assert records[9999].pdb_residue_id_token == "A000"
-        assert store_mod._decode_hybrid36(4, records[-1].pdb_residue_id_token) == records[-1].residue_id
-
-    def test_steric_grid_matches_bruteforce_clearance(self):
-        block = pms.Molecule("steric_block", "SBL")
-        block.set_box([1.0, 1.0, 1.0])
-        block.add("Si", [0.10, 0.10, 0.10], name="SI1")
-        block.add("O", [0.26, 0.10, 0.10], name="OM1")
-        block.add("Si", [0.42, 0.10, 0.10], name="SI2")
-
-        pore = Pore(block, pms.Matrix([[0, [1]], [2, [1]]]))
-
-        attached = pms.Molecule("attached_probe", "ATP")
-        attached.set_box([1.0, 1.0, 1.0])
-        attached.add("C", [0.30, 0.30, 0.10], name="C1")
-        attached.add("H", [0.40, 0.30, 0.10], name="H1")
-        pore._mol_dict["in"]["ATP"] = [attached]
-
-        candidate = pms.Molecule("candidate_probe", "CDP")
-        candidate.set_box([1.0, 1.0, 1.0])
-        candidate.add("Si", [0.22, 0.23, 0.10], name="SI1")
-        candidate.add("C", [0.34, 0.23, 0.10], name="C1")
-
-        ignored = {0}
-        brute_force = pore._placement_clearance(candidate, ignored_block_atoms=ignored)
-        grid = pore._build_steric_grid()
-        local_grid = pore._placement_clearance(
-            candidate,
-            steric_grid=grid,
-            ignored_block_atoms=ignored,
-        )
-
-        assert local_grid == pytest.approx(brute_force, abs=1e-12)
-
-    def test_attachment_clearance_scale_can_relax_a_crowded_pose(self):
-        block = pms.Molecule("clearance_block", "CLB")
-        block.set_box([1.0, 1.0, 1.0])
-        block.add("O", [0.00, 0.00, 0.00], name="O1")
-        pore = Pore(block, pms.Matrix([[0, []]]))
-
-        candidate = pms.Molecule("clearance_candidate", "CLC")
-        candidate.set_box([1.0, 1.0, 1.0])
-        candidate.add("C", [0.10, 0.00, 0.00], name="C1")
-
-        strict_clearance = pore._placement_clearance(
-            candidate,
-            steric_clearance_scale=0.85,
-        )
-        relaxed_clearance = pore._placement_clearance(
-            candidate,
-            steric_clearance_scale=0.60,
-        )
-
-        assert strict_clearance < 0
-        assert relaxed_clearance > 0
-
-    def test_optimize_attachment_pose_matches_bruteforce_rotation_scan(self):
-        block = pms.Molecule("rotation_block", "RBL")
-        block.set_box([1.0, 1.0, 1.0])
-        block.add("O", [0.20, 0.00, 0.00], name="O1")
-        pore = Pore(block, pms.Matrix([[0, []]]))
-
-        candidate = pms.Molecule("rotation_candidate", "RCD")
-        candidate.set_box([1.0, 1.0, 1.0])
-        candidate.add("Si", [0.00, 0.00, 0.00], name="SI1")
-        candidate.add("C", [0.10, 0.00, 0.00], name="C1")
-
-        grid = pore._build_steric_grid()
-        optimized = pore._optimize_attachment_pose(
-            candidate,
-            0,
-            [0.0, 0.0, 1.0],
-            set(),
-            grid,
-            True,
-            90,
-            0.85,
-        )
-
-        brute_force_best = None
-        brute_force_clearance = float("-inf")
-        rotation_axis = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
-        for angle in pore._rotation_angles(90):
-            brute_force_candidate = copy.deepcopy(candidate)
-            if angle != 0:
-                brute_force_candidate.rotate(rotation_axis, angle)
-            clearance = pore._placement_clearance(
-                brute_force_candidate,
-                steric_grid=grid,
-                steric_clearance_scale=0.85,
-            )
-            if clearance > brute_force_clearance:
-                brute_force_clearance = clearance
-                brute_force_best = brute_force_candidate
-
-        assert optimized is not None
-        assert pore._placement_clearance(
-            optimized,
-            steric_grid=grid,
-            steric_clearance_scale=0.85,
-        ) == pytest.approx(brute_force_clearance, abs=1e-12)
-        assert optimized.pos(1) == pytest.approx(brute_force_best.pos(1), abs=1e-12)
-
+        assert snapshot_mod._decode_hybrid36(4, records[-1].pdb_residue_id_token) == records[-1].residue_id
 
     ###########
     # Pattern #
     ###########
     def test_pattern_beta_cristobalit(self):
         # Initialize
-        beta_cristobalit = pms.BetaCristobalit()
+        beta_cristobalit = BetaCristobalit()
 
         # Pattern and output
         pattern = beta_cristobalit.pattern()
         pattern.set_name("pattern_beta_cbt_minimal")
         assert pattern.get_num() == 36
-        pms.StructureWriter(pattern, "output").write_gro()
+        sms.StructureWriter(pattern, "output").write_gro()
 
         # Generation and Orientation
-        beta_cristobalit = pms.BetaCristobalit()
+        beta_cristobalit = BetaCristobalit()
         beta_cristobalit.generate([2, 2, 2], "x")
         beta_cristobalit.get_block().set_name("pattern_beta_cbt_x")
         assert beta_cristobalit.get_size() == [2.480, 1.754, 2.024]
         assert [round(x, 3) for x in beta_cristobalit.get_block().get_box()] == [2.480, 1.754, 2.024]
-        pms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro()
+        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro()
 
-        beta_cristobalit = pms.BetaCristobalit()
+        beta_cristobalit = BetaCristobalit()
         beta_cristobalit.generate([2, 2, 2], "y")
         beta_cristobalit.get_block().set_name("pattern_beta_cbt_y")
         assert beta_cristobalit.get_size() == [2.024, 2.480, 1.754]
         assert [round(x, 3) for x in beta_cristobalit.get_block().get_box()] == [2.024, 2.480, 1.754]
-        pms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro()
+        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro()
 
-        beta_cristobalit = pms.BetaCristobalit()
+        beta_cristobalit = BetaCristobalit()
         beta_cristobalit.generate([2, 2, 2], "z")
         beta_cristobalit.get_block().set_name("pattern_beta_cbt_z")
         assert beta_cristobalit.get_size() == [2.024, 1.754, 2.480]
         assert [round(x, 3) for x in beta_cristobalit.get_block().get_box()] == [2.024, 1.754, 2.480]
-        pms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro()
-        pms.StructureWriter(beta_cristobalit.get_block(), "output").write_lammps()
+        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro()
+        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_lammps()
 
         # Misc
-        beta_cristobalit = pms.BetaCristobalit()
+        beta_cristobalit = BetaCristobalit()
         beta_cristobalit.generate([2, 2, 2], "z")
         beta_cristobalit.get_block().set_name("DOTA")
 
@@ -749,39 +670,39 @@ class TestUserModel:
 
     def test_alpha_cristobalit(self):
         # Initialize
-        alpha_cristobalit = pms.AlphaCristobalit()
+        alpha_cristobalit = AlphaCristobalit()
 
         # Pattern and output
         pattern = alpha_cristobalit.pattern()
         pattern.set_name("pattern_alpha_cbt_minimal")
         assert pattern.get_num() == 12
-        pms.StructureWriter(pattern, "output").write_gro()
+        sms.StructureWriter(pattern, "output").write_gro()
 
         # Generation and Orientation
-        alpha_cristobalit = pms.AlphaCristobalit()
+        alpha_cristobalit = AlphaCristobalit()
         alpha_cristobalit.generate([2, 2, 2], "x")
         alpha_cristobalit.get_block().set_name("pattern_alpha_cbt_x")
         assert alpha_cristobalit.get_size() == [2.0844, 1.9912, 1.9912]
         assert [round(x, 3) for x in alpha_cristobalit.get_block().get_box()] == [2.084, 1.991, 1.991]
-        pms.StructureWriter(alpha_cristobalit.get_block(), "output").write_gro()
+        sms.StructureWriter(alpha_cristobalit.get_block(), "output").write_gro()
 
-        alpha_cristobalit = pms.AlphaCristobalit()
+        alpha_cristobalit = AlphaCristobalit()
         alpha_cristobalit.generate([2, 2, 2], "y")
         alpha_cristobalit.get_block().set_name("pattern_alpha_cbt_y")
         assert alpha_cristobalit.get_size() == [1.9912, 2.0844, 1.9912]
         assert [round(x, 3) for x in alpha_cristobalit.get_block().get_box()] == [1.991, 2.084, 1.991]
-        pms.StructureWriter(alpha_cristobalit.get_block(), "output").write_gro()
+        sms.StructureWriter(alpha_cristobalit.get_block(), "output").write_gro()
 
-        alpha_cristobalit = pms.AlphaCristobalit()
+        alpha_cristobalit = AlphaCristobalit()
         alpha_cristobalit.generate([2, 2, 2], "z")
         alpha_cristobalit.get_block().set_name("pattern_alpha_cbt_z")
         assert alpha_cristobalit.get_size() == [1.9912, 1.9912, 2.0844]
         assert [round(x, 3) for x in alpha_cristobalit.get_block().get_box()] == [1.991, 1.991, 2.084]
-        pms.StructureWriter(alpha_cristobalit.get_block(), "output").write_gro()
-        pms.StructureWriter(alpha_cristobalit.get_block(), "output").write_lammps()
+        sms.StructureWriter(alpha_cristobalit.get_block(), "output").write_gro()
+        sms.StructureWriter(alpha_cristobalit.get_block(), "output").write_lammps()
 
         # Misc
-        alpha_cristobalit = pms.AlphaCristobalit()
+        alpha_cristobalit = AlphaCristobalit()
         alpha_cristobalit.generate([2, 2, 2], "z")
         alpha_cristobalit.get_block().set_name("DOTA")
 
@@ -799,10 +720,10 @@ class TestUserModel:
     # Dice #
     ########
     def test_dice(self):
-        block = pms.BetaCristobalit().generate([2, 2, 2], "z")
+        block = BetaCristobalit().generate([2, 2, 2], "z")
         block.set_name("dice")
-        pms.StructureWriter(block, "output").write_gro()
-        dice = pms.Dice(block, 0.4, True)
+        sms.StructureWriter(block, "output").write_gro()
+        dice = Dice(block, 0.4, True)
 
         # Splitting and filling
         assert len(dice.get_origin()) == 120
@@ -841,13 +762,13 @@ class TestUserModel:
     ##########
     def test_matrix(self):
         orient = "z"
-        block = pms.BetaCristobalit().generate([1, 1, 1], orient)
+        block = BetaCristobalit().generate([1, 1, 1], orient)
         block.set_name("matrix")
-        pms.StructureWriter(block, "output").write_gro()
-        dice = pms.Dice(block, 0.2, True)
+        sms.StructureWriter(block, "output").write_gro()
+        dice = Dice(block, 0.2, True)
         bonds = dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2])
 
-        matrix = pms.Matrix(bonds)
+        matrix = Matrix(bonds)
         connect = matrix.get_matrix()
         matrix.split(0, 17)
         assert connect[0]["atoms"] == [30, 8, 1]
@@ -873,22 +794,22 @@ class TestUserModel:
     # Shape #
     #########
     def test_shape_cylinder(self):
-        block = pms.BetaCristobalit().generate([6, 6, 6], "z")
+        block = BetaCristobalit().generate([6, 6, 6], "z")
         block.set_name("shape_cylinder")
-        dice = pms.Dice(block, 0.4, True)
-        matrix = pms.Matrix(dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2]))
+        dice = Dice(block, 0.4, True)
+        matrix = Matrix(dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2]))
         centroid = block.centroid()
-        central = pms.geom.unit(pms.geom.rotate([0, 0, 1], [1, 0, 0], 45, True))
+        central = geometry.unit(geometry.rotate([0, 0, 1], [1, 0, 0], 45, True))
 
-        cylinder = pms.Cylinder(
-            pms.CylinderConfig(
+        cylinder = Cylinder(
+            CylinderConfig(
                 centroid=tuple(centroid),
                 central=tuple(central),
                 length=3,
                 diameter=4,
             )
         )
-        assert isinstance(cylinder.get_config(), pms.CylinderConfig)
+        assert isinstance(cylinder.get_config(), CylinderConfig)
 
         # Properties
         assert round(cylinder.volume(), 4) == 37.6991
@@ -911,8 +832,8 @@ class TestUserModel:
         block.delete(matrix.bound(0))
         assert block.get_num() == 12650
 
-        # Store molecule
-        pms.StructureWriter(block, "output").write_gro()
+        # Write molecule
+        sms.StructureWriter(block, "output").write_gro()
 
         # Plot surface
         plt.figure()
@@ -920,21 +841,21 @@ class TestUserModel:
         # plt.show()
 
     def test_shape_sphere(self):
-        block = pms.BetaCristobalit().generate([6, 6, 6], "z")
+        block = BetaCristobalit().generate([6, 6, 6], "z")
         block.set_name("shape_sphere")
-        dice = pms.Dice(block, 0.4, True)
-        matrix = pms.Matrix(dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2]))
+        dice = Dice(block, 0.4, True)
+        matrix = Matrix(dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2]))
         centroid = block.centroid()
-        central = pms.geom.unit(pms.geom.rotate([0, 0, 1], [1, 0, 0], 0, True))
+        central = geometry.unit(geometry.rotate([0, 0, 1], [1, 0, 0], 0, True))
 
-        sphere = pms.Sphere(
-            pms.SphereConfig(
+        sphere = Sphere(
+            SphereConfig(
                 centroid=tuple(centroid),
                 central=tuple(central),
                 diameter=4,
             )
         )
-        assert isinstance(sphere.get_config(), pms.SphereConfig)
+        assert isinstance(sphere.get_config(), SphereConfig)
 
         # Properties
         assert round(sphere.volume(), 4) == 33.5103
@@ -954,23 +875,23 @@ class TestUserModel:
         block.delete(matrix.bound(0))
         assert block.get_num() == 12934
 
-        # Store molecule
-        pms.StructureWriter(block, "output").write_gro()
+        # Write molecule
+        sms.StructureWriter(block, "output").write_gro()
 
         # Plot surface
         sphere.plot(inp=3.14, vec=[1.08001048, 3.09687610, 1.72960828])
         # plt.show()
 
     def test_shape_cuboid(self):
-        block = pms.BetaCristobalit().generate([6, 6, 6], "z")
+        block = BetaCristobalit().generate([6, 6, 6], "z")
         block.set_name("shape_cuboid")
-        dice = pms.Dice(block, 0.4, True)
-        matrix = pms.Matrix(dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2]))
+        dice = Dice(block, 0.4, True)
+        matrix = Matrix(dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2]))
         centroid = block.centroid()
-        central = pms.geom.unit(pms.geom.rotate([0, 0, 1], [1, 0, 0], 0, True))
+        central = geometry.unit(geometry.rotate([0, 0, 1], [1, 0, 0], 0, True))
 
-        cuboid = pms.Cuboid(
-            pms.CuboidConfig(
+        cuboid = Cuboid(
+            CuboidConfig(
                 centroid=tuple(centroid),
                 central=tuple(central),
                 length=10,
@@ -978,7 +899,7 @@ class TestUserModel:
                 height=4,
             )
         )
-        assert isinstance(cuboid.get_config(), pms.CuboidConfig)
+        assert isinstance(cuboid.get_config(), CuboidConfig)
 
         # Properties
         assert round(cuboid.volume(), 4) == 240
@@ -994,23 +915,23 @@ class TestUserModel:
         block.delete(matrix.bound(0))
         assert block.get_num() == 5160
 
-        # Store molecule
-        pms.StructureWriter(block, "output").write_gro()
+        # Write molecule
+        sms.StructureWriter(block, "output").write_gro()
 
         # Plot surface
         cuboid.plot()
         # plt.show()
 
     def test_shape_cone(self):
-        block = pms.BetaCristobalit().generate([6, 6, 6], "z")
+        block = BetaCristobalit().generate([6, 6, 6], "z")
         block.set_name("shape_cone")
-        dice = pms.Dice(block, 0.4, True)
-        matrix = pms.Matrix(dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2]))
+        dice = Dice(block, 0.4, True)
+        matrix = Matrix(dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2]))
         centroid = block.centroid()
-        central = pms.geom.unit(pms.geom.rotate([0, 0, 1], [1, 0, 0], 45, True))
+        central = geometry.unit(geometry.rotate([0, 0, 1], [1, 0, 0], 45, True))
 
-        cone = pms.Cone(
-            pms.ConeConfig(
+        cone = Cone(
+            ConeConfig(
                 centroid=tuple(centroid),
                 central=tuple(central),
                 length=6,
@@ -1018,7 +939,7 @@ class TestUserModel:
                 diameter_2=1,
             )
         )
-        assert isinstance(cone.get_config(), pms.ConeConfig)
+        assert isinstance(cone.get_config(), ConeConfig)
 
         # Properties
         assert round(cone.volume(), 4) == 32.9867
@@ -1041,8 +962,8 @@ class TestUserModel:
         block.delete(matrix.bound(0))
         assert block.get_num() == 12486
 
-        # Store molecule
-        pms.StructureWriter(block, "output").write_gro()
+        # Write molecule
+        sms.StructureWriter(block, "output").write_gro()
 
         # Plot surface
         plt.figure()
