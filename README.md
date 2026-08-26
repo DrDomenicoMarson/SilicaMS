@@ -153,6 +153,9 @@ Use the project environment directly:
     --no-deps --no-build-isolation --wheel-dir /tmp/silicams-wheel
 ```
 
+The `dev` extra installs the declared Setuptools build backend so the explicit
+no-build-isolation wheel check runs against the prepared project environment.
+
 The `examples/` directory contains minimal bare, functionalized, and filling
 workflows.
 
