@@ -27,6 +27,13 @@ finalized ``SilicaSlit``, composition report, resolved silica topology, and
 bare charge diagnostics. ``AmorphousSlitBuilder.prepare()`` exposes the same
 preparation phase without writing files.
 
+``result.report.slit_geometry`` is a ``PeriodicSlitGeometry`` fitted from the
+two periodic mean surface-Si planes. It distinguishes the projected area of
+one interface from the total projected area of both interfaces and records the
+mean-plane volume and normal RMS roughness separately. High-level writers
+store the unit-explicit schema-v1 mapping in ``<system_name>.yml`` for explicit
+reuse by filling and density analysis.
+
 Functionalized slits
 --------------------
 

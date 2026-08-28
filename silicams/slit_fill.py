@@ -16,11 +16,18 @@ from pathlib import Path
 from typing import Sequence, TextIO
 
 import numpy as np
+import yaml
 
 from numpy.typing import NDArray
 from scipy.spatial import cKDTree
 
 import silicams.database as db
+from silicams.slit_geometry import (
+    AXIS_NAMES,
+    PeriodicSlitGeometry,
+    minimum_image_displacements,
+    wrap_positions,
+)
 
 
 FloatArray = NDArray[np.float64]
@@ -32,12 +39,10 @@ BOX_LINE_TOLERANCE_NM = 1.0e-6
 SLIT_COORDINATE_TOLERANCE_NM = 1.0e-6
 GRAMS_PER_DA = 1.66053906660e-24
 CUBIC_CENTIMETERS_PER_NM3 = 1.0e-21
-AXIS_NAMES = ("x", "y", "z")
 
 __all__ = [
     "DEFAULT_DENSITY_PROBE_RADII_NM",
     "SlitFillConfig",
-    "SurfacePlaneRegion",
     "DensityProbeEstimate",
     "DensityEstimate",
     "SlitFillReport",
@@ -64,6 +69,13 @@ class SlitFillConfig:
     log_path : Path or None, optional
         Human-readable report path. When omitted, the report is written next to
         ``output_path`` with the suffix ``.log``.
+    slit_geometry : PeriodicSlitGeometry or None, optional
+        Explicit slit geometry. Supply this or ``slit_geometry_path``, but not
+        both. When neither is supplied, the geometry is inferred from
+        hydroxylated surface silicon atoms in ``slit_path``.
+    slit_geometry_path : Path or None, optional
+        Schema-v1 slit geometry YAML file. The file is read only when supplied
+        explicitly; neighboring files are never discovered automatically.
     target_resname : str, optional
         Residue name used to identify removable guest molecules.
     general_cutoff_nm : float, optional
@@ -83,10 +95,10 @@ class SlitFillConfig:
         slit interval.
     surface_plane_padding_nm : float, optional
         Signed padding applied on both sides of the detected slit interval.
-        Positive values shrink the accessible interval and negative values
+        Positive values shrink the mean-plane interval and negative values
         expand it.
     density_probe_radii_nm : tuple[float, ...], optional
-        Probe radii used for accessible-volume density estimates.
+        Probe radii used for probe-free slit-volume density estimates.
     density_sample_count : int, optional
         Monte Carlo sample count used for each density repeat.
     density_seed_count : int, optional
@@ -102,6 +114,8 @@ class SlitFillConfig:
     slit_path: Path = Path("msn_9_1.gro")
     output_path: Path = Path("merged_guest_slit_ring_check.gro")
     log_path: Path | None = None
+    slit_geometry: PeriodicSlitGeometry | None = None
+    slit_geometry_path: Path | None = None
     target_resname: str = "THY"
     general_cutoff_nm: float = 0.1
     ring_atom_prefix: str = "CA"
@@ -127,6 +141,10 @@ class SlitFillConfig:
             raise ValueError("The ring polygon padding must be non-negative.")
         if not np.isfinite(self.surface_plane_padding_nm):
             raise ValueError("The surface-plane padding must be finite.")
+        if self.slit_geometry is not None and self.slit_geometry_path is not None:
+            raise ValueError(
+                "Supply either slit_geometry or slit_geometry_path, not both."
+            )
         if not self.density_probe_radii_nm:
             raise ValueError("At least one density probe radius must be provided.")
         if any(radius < 0.0 for radius in self.density_probe_radii_nm):
@@ -140,81 +158,46 @@ class SlitFillConfig:
 
 
 @dataclass(frozen=True)
-class SurfacePlaneRegion:
-    """Detected slit interval normal to the confining silica surfaces.
-
-    Parameters
-    ----------
-    axis_index : int
-        Coordinate-axis index normal to the confining slit planes.
-    axis_name : str
-        Human-readable coordinate-axis label.
-    lower_plane_nm : float
-        Lower plane position in wrapped coordinates.
-    upper_plane_nm : float
-        Upper plane position in wrapped coordinates.
-    interval_wraps : bool
-        Whether the accessible interval crosses the periodic box boundary.
-    accessible_width_nm : float
-        Width of the unpadded accessible interval.
-    padding_nm : float
-        Inward padding applied to both sides of the accessible interval.
-    surface_si_atom_count : int
-        Number of hydroxylated surface silicon atoms used to infer the
-        accessible interval.
-    """
-
-    axis_index: int
-    axis_name: str
-    lower_plane_nm: float
-    upper_plane_nm: float
-    interval_wraps: bool
-    accessible_width_nm: float
-    padding_nm: float
-    surface_si_atom_count: int
-
-
-@dataclass(frozen=True)
 class DensityProbeEstimate:
-    """Accessible-volume density summary for one probe radius.
+    """Probe-free slit-volume density summary for one probe radius.
 
     Parameters
     ----------
     probe_radius_nm : float
-        Probe radius used for the accessible-volume estimate.
+        Probe radius used for the probe-free volume estimate.
     seed_values : tuple[int, ...]
         Actual random seeds used for repeated estimates.
-    accessible_fractions : tuple[float, ...]
-        Accessible box fractions measured for each repeat.
-    accessible_volumes_nm3 : tuple[float, ...]
-        Accessible volumes measured for each repeat.
-    accessible_densities_g_cm3 : tuple[float, ...]
-        Accessible densities derived for each repeat.
-    accessible_fraction_mean : float
-        Mean accessible fraction across repeats.
-    accessible_fraction_std : float
-        Standard deviation of the accessible fraction across repeats.
-    accessible_volume_mean_nm3 : float
-        Mean accessible volume across repeats.
-    accessible_volume_std_nm3 : float
-        Standard deviation of the accessible volume across repeats.
-    accessible_density_mean_g_cm3 : float
-        Mean accessible density across repeats.
-    accessible_density_std_g_cm3 : float
-        Standard deviation of the accessible density across repeats.
+    probe_free_fractions : tuple[float, ...]
+        Probe-free fractions of the padded geometric slit volume.
+    probe_free_volumes_nm3 : tuple[float, ...]
+        Probe-free slit volumes measured for each repeat.
+    probe_free_densities_g_cm3 : tuple[float, ...]
+        Densities derived from the probe-free slit volumes.
+    probe_free_fraction_mean : float
+        Mean probe-free fraction across repeats.
+    probe_free_fraction_std : float
+        Standard deviation of the probe-free fraction across repeats.
+    probe_free_volume_mean_nm3 : float
+        Mean probe-free volume across repeats.
+    probe_free_volume_std_nm3 : float
+        Standard deviation of the probe-free volume across repeats.
+    probe_free_density_mean_g_cm3 : float
+        Mean probe-free density across repeats.
+    probe_free_density_std_g_cm3 : float
+        Standard deviation of the probe-free density across repeats.
     """
 
     probe_radius_nm: float
     seed_values: tuple[int, ...]
-    accessible_fractions: tuple[float, ...]
-    accessible_volumes_nm3: tuple[float, ...]
-    accessible_densities_g_cm3: tuple[float, ...]
-    accessible_fraction_mean: float
-    accessible_fraction_std: float
-    accessible_volume_mean_nm3: float
-    accessible_volume_std_nm3: float
-    accessible_density_mean_g_cm3: float
-    accessible_density_std_g_cm3: float
+    probe_free_fractions: tuple[float, ...]
+    probe_free_volumes_nm3: tuple[float, ...]
+    probe_free_densities_g_cm3: tuple[float, ...]
+    probe_free_fraction_mean: float
+    probe_free_fraction_std: float
+    probe_free_volume_mean_nm3: float
+    probe_free_volume_std_nm3: float
+    probe_free_density_mean_g_cm3: float
+    probe_free_density_std_g_cm3: float
 
 
 @dataclass(frozen=True)
@@ -232,18 +215,24 @@ class DensityEstimate:
     box_average_density_g_cm3 : float
         Guest density obtained by dividing the retained guest mass by the full
         periodic box volume.
+    geometric_slit_volume_nm3 : float
+        Geometric mean-plane slit volume after signed surface-plane padding.
+    surface_plane_padding_nm : float
+        Signed surface-plane padding used for geometric and probe-free volumes.
     sample_count_per_seed : int
         Monte Carlo sample count used for each repeated estimate.
     seed_count : int
         Number of repeated estimates used for each probe radius.
     probe_estimates : tuple[DensityProbeEstimate, ...]
-        Probe-dependent accessible-volume density summaries.
+        Probe-dependent probe-free slit-volume density summaries.
     """
 
     guest_molecule_mass_da: float
     total_guest_mass_da: float
     box_volume_nm3: float
     box_average_density_g_cm3: float
+    geometric_slit_volume_nm3: float
+    surface_plane_padding_nm: float
     sample_count_per_seed: int
     seed_count: int
     probe_estimates: tuple[DensityProbeEstimate, ...]
@@ -261,8 +250,10 @@ class SlitFillReport:
         Number of target guest residues retained after centered box cropping.
     removed_outside_crop_guest_molecules : int
         Number of target guest residues removed during centered box cropping.
-    surface_plane_region : SurfacePlaneRegion
-        Detected slit interval used for orientation and optional filtering.
+    input_slit_geometry : PeriodicSlitGeometry
+        Slit geometry in the input slit coordinate axes.
+    output_slit_geometry : PeriodicSlitGeometry
+        The same slit geometry after the output-axis permutation.
     surface_plane_filtered_guest_molecules : int
         Number of target residues still selected after the optional surface
         plane filter.
@@ -336,7 +327,8 @@ class SlitFillReport:
     initial_guest_molecules: int
     cropped_guest_molecules: int
     removed_outside_crop_guest_molecules: int
-    surface_plane_region: SurfacePlaneRegion
+    input_slit_geometry: PeriodicSlitGeometry
+    output_slit_geometry: PeriodicSlitGeometry
     surface_plane_filtered_guest_molecules: int
     removed_by_surface_plane_guest_molecules: int
     removed_by_general_cutoff_guest_molecules: int
@@ -378,14 +370,23 @@ class SlitDensityConfig:
     log_path : Path or None, optional
         Human-readable density report path. When omitted, the report is written
         next to ``input_path`` with the suffix ``_density.log``.
+    slit_geometry : PeriodicSlitGeometry or None, optional
+        Explicit slit geometry. Supply this or ``slit_geometry_path``, but not
+        both. When neither is supplied, geometry is inferred from
+        hydroxylated surface silicon atoms in the framework.
+    slit_geometry_path : Path or None, optional
+        Explicit schema-v1 slit geometry YAML path. Neighboring YAML files are
+        never discovered automatically.
     target_resname : str, optional
         Residue name used to identify guest molecules.
     density_probe_radii_nm : tuple[float, ...], optional
-        Probe radii used for accessible-volume density estimates.
+        Probe radii used for probe-free slit-volume density estimates.
     density_sample_count : int, optional
         Monte Carlo sample count used for each density repeat.
     density_seed_count : int, optional
         Number of repeated density estimates per probe radius.
+    surface_plane_padding_nm : float, optional
+        Signed padding applied to both mean surface planes before sampling.
     random_seed : int or None, optional
         Optional seed used to generate deterministic Monte Carlo seeds. When
         omitted, entropy-backed random seeds are used.
@@ -393,10 +394,13 @@ class SlitDensityConfig:
 
     input_path: Path = Path("merged_guest_slit_ring_check.gro")
     log_path: Path | None = None
+    slit_geometry: PeriodicSlitGeometry | None = None
+    slit_geometry_path: Path | None = None
     target_resname: str = "THY"
     density_probe_radii_nm: tuple[float, ...] = DEFAULT_DENSITY_PROBE_RADII_NM
     density_sample_count: int = 200000
     density_seed_count: int = 5
+    surface_plane_padding_nm: float = 0.0
     random_seed: int | None = None
 
     def __post_init__(self) -> None:
@@ -404,6 +408,12 @@ class SlitDensityConfig:
 
         if not self.density_probe_radii_nm:
             raise ValueError("At least one density probe radius must be provided.")
+        if self.slit_geometry is not None and self.slit_geometry_path is not None:
+            raise ValueError(
+                "Supply either slit_geometry or slit_geometry_path, not both."
+            )
+        if not np.isfinite(self.surface_plane_padding_nm):
+            raise ValueError("The surface-plane padding must be finite.")
         if any(radius < 0.0 for radius in self.density_probe_radii_nm):
             raise ValueError("All density probe radii must be non-negative.")
         if self.density_sample_count <= 0:
@@ -428,6 +438,8 @@ class SlitDensityReport:
         Number of non-target atoms treated as the slit framework.
     framework_residue_count : int
         Number of non-target residues treated as the slit framework.
+    slit_geometry : PeriodicSlitGeometry
+        Slit geometry used to define the sampled mean-plane interval.
     density_estimate : DensityEstimate
         Density metrics derived for the target guest population.
     """
@@ -436,6 +448,7 @@ class SlitDensityReport:
     guest_atom_count: int
     framework_atom_count: int
     framework_residue_count: int
+    slit_geometry: PeriodicSlitGeometry
     density_estimate: DensityEstimate
 
 
@@ -477,7 +490,7 @@ class _SurfacePlaneSelection:
 
     selected_residue_mask: BoolArray
     removed_residue_mask: BoolArray
-    plane_region: SurfacePlaneRegion
+    slit_geometry: PeriodicSlitGeometry
 
 
 @dataclass(frozen=True)
@@ -827,14 +840,8 @@ def _validate_density_config(config: SlitDensityConfig, merged_system: _GroSyste
     if all(residue_name == config.target_resname for residue_name in merged_system.residue_names):
         raise ValueError(
             "The input GRO file does not contain any non-target atoms, so no slit "
-            "framework is available for accessible-volume estimation."
+            "framework is available for probe-free volume estimation."
         )
-
-
-def _wrap_positions(coordinates: FloatArray, box_lengths: FloatArray) -> FloatArray:
-    """Wrap Cartesian coordinates into an orthorhombic simulation box."""
-
-    return np.mod(coordinates, box_lengths)
 
 
 def _wrap_residues(
@@ -946,13 +953,12 @@ def _find_hydroxylated_surface_silicon_indices(slit_system: _GroSystem) -> IntAr
     return np.array(silicon_indices, dtype=np.int32)
 
 
-def _infer_surface_plane_region(
+def _infer_slit_geometry(
     slit_system: _GroSystem,
     slit_coordinates: FloatArray,
     box_lengths: FloatArray,
-    padding_nm: float,
-) -> SurfacePlaneRegion:
-    """Infer the accessible slit interval from hydroxylated surface Si atoms.
+) -> PeriodicSlitGeometry:
+    """Infer periodic mean slit planes and the lower-occupancy framework arc.
 
     Parameters
     ----------
@@ -962,19 +968,22 @@ def _infer_surface_plane_region(
         Slit coordinates in the final slit reference frame.
     box_lengths : ndarray
         Orthorhombic box lengths in nanometers.
-    padding_nm : float
-        Signed padding applied on each side of the detected interval.
-
     Returns
     -------
-    SurfacePlaneRegion
-        Detected slit interval.
+    PeriodicSlitGeometry
+        Inferred orthorhombic slit geometry.
+
+    Notes
+    -----
+    Two periodic planes define complementary arcs. After fitting the planes,
+    this function chooses the arc containing fewer framework atom centers. A
+    tie retains the largest surface-position gap selected by the fitter.
 
     Raises
     ------
     ValueError
-        Raised when too few surface Si atoms are available or when the
-        requested positive padding would remove the accessible interval.
+        Raised when too few surface Si atoms are available or their positions
+        cannot be separated into two faces.
     """
 
     surface_silicon_indices = _find_hydroxylated_surface_silicon_indices(slit_system)
@@ -984,79 +993,166 @@ def _infer_surface_plane_region(
             "the slit planes."
         )
 
-    wrapped_surface_coordinates = _wrap_positions(
-        slit_coordinates[surface_silicon_indices],
+    candidate_geometry = PeriodicSlitGeometry.from_surface_positions(
+        box_lengths_nm=box_lengths,
+        surface_positions_nm=slit_coordinates[surface_silicon_indices],
+    )
+    complementary_geometry = PeriodicSlitGeometry(
+        box_lengths_nm=candidate_geometry.box_lengths_nm,
+        normal_axis_index=candidate_geometry.normal_axis_index,
+        lower_plane_nm=candidate_geometry.upper_plane_nm,
+        upper_plane_nm=candidate_geometry.lower_plane_nm,
+        surface_support_count=candidate_geometry.surface_support_count,
+        normal_roughness_rms_nm=candidate_geometry.normal_roughness_rms_nm,
+    )
+    candidate_framework_count = int(
+        np.count_nonzero(candidate_geometry.contains_positions(slit_coordinates))
+    )
+    complementary_framework_count = int(
+        np.count_nonzero(complementary_geometry.contains_positions(slit_coordinates))
+    )
+    if complementary_framework_count < candidate_framework_count:
+        return complementary_geometry
+    return candidate_geometry
+
+
+def _load_slit_geometry(path: Path) -> PeriodicSlitGeometry:
+    """Load one schema-v1 periodic slit geometry YAML file.
+
+    Parameters
+    ----------
+    path : Path
+        Explicit YAML file path.
+
+    Returns
+    -------
+    PeriodicSlitGeometry
+        Parsed and validated slit geometry.
+
+    Raises
+    ------
+    ValueError
+        Raised when the YAML root, schema version, or geometry mapping is
+        invalid.
+    """
+
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} must contain a YAML mapping.")
+    if payload.get("schema_version") != 1:
+        raise ValueError(f"{path} must declare schema_version: 1.")
+    geometry_payload = payload.get("slit_geometry")
+    if not isinstance(geometry_payload, dict):
+        raise ValueError(f"{path} must contain a slit_geometry mapping.")
+    try:
+        return PeriodicSlitGeometry.from_dict(geometry_payload)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Invalid slit geometry in {path}: {error}") from error
+
+
+def _validate_geometry_box(
+    slit_geometry: PeriodicSlitGeometry,
+    box_lengths: FloatArray,
+) -> None:
+    """Validate that geometry and GRO orthorhombic box lengths agree.
+
+    Parameters
+    ----------
+    slit_geometry : PeriodicSlitGeometry
+        Geometry supplied for the GRO structure.
+    box_lengths : ndarray
+        GRO box lengths in nanometers.
+
+    Raises
+    ------
+    ValueError
+        Raised when the box lengths differ beyond the GRO precision tolerance.
+    """
+
+    if not np.allclose(
+        np.asarray(slit_geometry.box_lengths_nm),
         box_lengths,
-    )
-
-    best_axis_index = 0
-    best_gap_index = 0
-    best_gap_nm = -np.inf
-    best_axis_values = np.empty(0, dtype=np.float64)
-
-    for axis_index in range(3):
-        axis_values = np.sort(wrapped_surface_coordinates[:, axis_index])
-        periodic_gaps = np.diff(axis_values)
-        wrap_gap = axis_values[0] + box_lengths[axis_index] - axis_values[-1]
-        all_gaps = np.concatenate((periodic_gaps, np.array([wrap_gap], dtype=np.float64)))
-        gap_index = int(np.argmax(all_gaps))
-        gap_nm = float(all_gaps[gap_index])
-        if gap_nm > best_gap_nm:
-            best_axis_index = axis_index
-            best_gap_index = gap_index
-            best_gap_nm = gap_nm
-            best_axis_values = axis_values
-
-    if best_gap_index < (best_axis_values.size - 1):
-        lower_plane_nm = float(best_axis_values[best_gap_index])
-        upper_plane_nm = float(best_axis_values[best_gap_index + 1])
-        interval_wraps = False
-        accessible_width_nm = upper_plane_nm - lower_plane_nm
-    else:
-        lower_plane_nm = float(best_axis_values[-1])
-        upper_plane_nm = float(best_axis_values[0])
-        interval_wraps = True
-        accessible_width_nm = upper_plane_nm + box_lengths[best_axis_index] - lower_plane_nm
-
-    if accessible_width_nm <= (2.0 * padding_nm):
+        rtol=0.0,
+        atol=BOX_LINE_TOLERANCE_NM,
+    ):
         raise ValueError(
-            "The detected slit interval is narrower than twice the requested "
-            "positive surface-plane padding."
+            "The slit geometry box lengths do not match the GRO box lengths: "
+            f"geometry={slit_geometry.box_lengths_nm}, GRO={tuple(box_lengths)}."
         )
 
-    return SurfacePlaneRegion(
-        axis_index=best_axis_index,
-        axis_name=AXIS_NAMES[best_axis_index],
-        lower_plane_nm=lower_plane_nm,
-        upper_plane_nm=upper_plane_nm,
-        interval_wraps=interval_wraps,
-        accessible_width_nm=float(accessible_width_nm),
-        padding_nm=padding_nm,
-        surface_si_atom_count=int(surface_silicon_indices.size),
-    )
 
+def _resolve_slit_geometry(
+    slit_system: _GroSystem,
+    slit_coordinates: FloatArray,
+    explicit_geometry: PeriodicSlitGeometry | None,
+    geometry_path: Path | None,
+    padding_nm: float,
+) -> PeriodicSlitGeometry:
+    """Resolve explicit, file-backed, or inferred periodic slit geometry.
 
-def _coordinate_inside_surface_plane_region(
-    coordinate_nm: float,
-    box_length_nm: float,
-    plane_region: SurfacePlaneRegion,
-) -> bool:
-    """Return whether one wrapped coordinate lies inside the slit interval."""
+    Parameters
+    ----------
+    slit_system : _GroSystem
+        Framework system used when inference is required.
+    slit_coordinates : ndarray
+        Framework coordinates in the same frame as ``slit_system.box_lengths``.
+    explicit_geometry : PeriodicSlitGeometry or None
+        Geometry supplied directly through the Python API.
+    geometry_path : Path or None
+        Explicit schema-v1 geometry YAML file.
+    padding_nm : float
+        Signed plane padding to validate against the resolved geometry.
 
-    wrapped_coordinate_nm = float(np.mod(coordinate_nm, box_length_nm))
-    tolerance_nm = 1.0e-12
+    Returns
+    -------
+    PeriodicSlitGeometry
+        Resolved and validated geometry.
+    """
 
-    if plane_region.interval_wraps:
-        lower_limit_nm = plane_region.lower_plane_nm + plane_region.padding_nm
-        upper_limit_nm = plane_region.upper_plane_nm - plane_region.padding_nm
-        return (
-            wrapped_coordinate_nm >= (lower_limit_nm - tolerance_nm)
-            or wrapped_coordinate_nm <= (upper_limit_nm + tolerance_nm)
+    if explicit_geometry is not None:
+        slit_geometry = explicit_geometry
+    elif geometry_path is not None:
+        slit_geometry = _load_slit_geometry(geometry_path)
+    else:
+        slit_geometry = _infer_slit_geometry(
+            slit_system=slit_system,
+            slit_coordinates=slit_coordinates,
+            box_lengths=slit_system.box_lengths,
         )
+    _validate_geometry_box(slit_geometry, slit_system.box_lengths)
+    slit_geometry.padded_width_nm(padding_nm)
+    return slit_geometry
 
-    lower_limit_nm = plane_region.lower_plane_nm + plane_region.padding_nm
-    upper_limit_nm = plane_region.upper_plane_nm - plane_region.padding_nm
-    return lower_limit_nm - tolerance_nm <= wrapped_coordinate_nm <= upper_limit_nm + tolerance_nm
+
+def _write_slit_geometry_metadata(
+    path: Path,
+    slit_geometry: PeriodicSlitGeometry,
+    padding_nm: float,
+) -> None:
+    """Write schema-v1 output geometry and analysis metadata.
+
+    Parameters
+    ----------
+    path : Path
+        YAML output path.
+    slit_geometry : PeriodicSlitGeometry
+        Geometry expressed in the output coordinate frame.
+    padding_nm : float
+        Signed plane padding used by filtering and density analysis.
+    """
+
+    payload = {
+        "schema_version": 1,
+        "slit_geometry": slit_geometry.to_dict(),
+        "slit_analysis": {
+            "surface_plane_padding_nm": padding_nm,
+            "padded_width_nm": slit_geometry.padded_width_nm(padding_nm),
+            "padded_geometric_volume_nm3": slit_geometry.padded_geometric_volume_nm3(
+                padding_nm
+            ),
+        },
+    }
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
 def _build_output_axis_permutation(normal_axis_index: int) -> tuple[int, int, int]:
@@ -1094,8 +1190,8 @@ def _apply_surface_plane_filter(
     translated_guest_coordinates: FloatArray,
     selected_residue_mask: BoolArray,
     target_resname: str,
-    plane_region: SurfacePlaneRegion,
-    box_lengths: FloatArray,
+    slit_geometry: PeriodicSlitGeometry,
+    padding_nm: float,
 ) -> _SurfacePlaneSelection:
     """Remove target residues that fall outside the detected slit planes.
 
@@ -1109,10 +1205,10 @@ def _apply_surface_plane_filter(
         Residue mask after center-cropping.
     target_resname : str
         Residue name to filter against the slit planes.
-    plane_region : SurfacePlaneRegion
-        Detected slit interval.
-    box_lengths : ndarray
-        Orthorhombic box lengths in nanometers.
+    slit_geometry : PeriodicSlitGeometry
+        Periodic mean-plane slit geometry.
+    padding_nm : float
+        Signed padding applied to both mean surface planes.
 
     Returns
     -------
@@ -1122,24 +1218,15 @@ def _apply_surface_plane_filter(
 
     filtered_residue_mask = selected_residue_mask.copy()
     removed_residue_mask = np.zeros(len(guest_system.residue_spans), dtype=bool)
-    wrapped_coordinates = _wrap_positions(translated_guest_coordinates, box_lengths)
 
     for residue_index, residue_span in enumerate(guest_system.residue_spans):
         if not selected_residue_mask[residue_index] or residue_span.residue_name != target_resname:
             continue
 
-        axis_coordinates = wrapped_coordinates[
-            residue_span.start:residue_span.stop,
-            plane_region.axis_index,
+        residue_coordinates = translated_guest_coordinates[
+            residue_span.start:residue_span.stop
         ]
-        if all(
-            _coordinate_inside_surface_plane_region(
-                coordinate_nm=float(coordinate_nm),
-                box_length_nm=float(box_lengths[plane_region.axis_index]),
-                plane_region=plane_region,
-            )
-            for coordinate_nm in axis_coordinates
-        ):
+        if np.all(slit_geometry.contains_positions(residue_coordinates, padding_nm)):
             continue
 
         filtered_residue_mask[residue_index] = False
@@ -1148,7 +1235,7 @@ def _apply_surface_plane_filter(
     return _SurfacePlaneSelection(
         selected_residue_mask=filtered_residue_mask,
         removed_residue_mask=removed_residue_mask,
-        plane_region=plane_region,
+        slit_geometry=slit_geometry,
     )
 
 
@@ -1158,15 +1245,12 @@ def _unwrap_residue_coordinates(
 ) -> FloatArray:
     """Unwrap one residue relative to its first atom under orthorhombic PBC."""
 
-    unwrapped = residue_coordinates.copy()
-    reference = unwrapped[0].copy()
-
-    for atom_index in range(1, unwrapped.shape[0]):
-        displacement = unwrapped[atom_index] - reference
-        displacement -= box_lengths * np.round(displacement / box_lengths)
-        unwrapped[atom_index] = reference + displacement
-
-    return unwrapped
+    reference = residue_coordinates[0]
+    return reference + minimum_image_displacements(
+        reference,
+        residue_coordinates,
+        box_lengths,
+    )
 
 
 def _guess_bond_definitions(
@@ -1386,17 +1470,43 @@ def _seed_values(seed_count: int, random_seed: int | None) -> tuple[int, ...]:
     return tuple(int(value) for value in rng.integers(0, 2**63, size=seed_count, dtype=np.int64))
 
 
-def _estimate_accessible_volume_nm3(
+def _estimate_probe_free_volume_nm3(
     framework_system: _GroSystem,
     framework_coordinates: FloatArray,
-    final_box_lengths: FloatArray,
+    slit_geometry: PeriodicSlitGeometry,
+    surface_plane_padding_nm: float,
     probe_radius_nm: float,
     sample_count: int,
     random_seed: int,
 ) -> tuple[float, float]:
-    """Estimate slit accessible volume with one Monte Carlo repeat."""
+    """Estimate probe-free volume inside the padded mean-plane interval.
 
-    framework_wrapped = _wrap_positions(framework_coordinates, final_box_lengths)
+    Parameters
+    ----------
+    framework_system : _GroSystem
+        Framework atoms and atom names used to assign exclusion radii.
+    framework_coordinates : ndarray
+        Framework coordinates in nanometers.
+    slit_geometry : PeriodicSlitGeometry
+        Periodic mean-plane interval and orthorhombic box.
+    surface_plane_padding_nm : float
+        Signed padding applied to both mean planes in nanometers.
+    probe_radius_nm : float
+        Radius added to every framework van der Waals radius in nanometers.
+    sample_count : int
+        Number of uniformly sampled points.
+    random_seed : int
+        Random seed for this Monte Carlo repeat.
+
+    Returns
+    -------
+    tuple[float, float]
+        Probe-free volume in cubic nanometers and the probe-free fraction of
+        the padded geometric slit volume.
+    """
+
+    box_lengths = np.asarray(slit_geometry.box_lengths_nm, dtype=np.float64)
+    framework_wrapped = wrap_positions(framework_coordinates, box_lengths)
     exclusion_radii_nm = np.array(
         [
             db.get_vdw_radius(_infer_element_from_atom_name(atom_name)) + probe_radius_nm
@@ -1406,16 +1516,22 @@ def _estimate_accessible_volume_nm3(
     )
     maximum_exclusion_radius_nm = float(np.max(exclusion_radii_nm))
     exclusion_radii_squared_nm2 = exclusion_radii_nm * exclusion_radii_nm
-    framework_tree = cKDTree(framework_wrapped, boxsize=final_box_lengths)
+    framework_tree = cKDTree(framework_wrapped, boxsize=box_lengths)
     random_number_generator = np.random.default_rng(random_seed)
 
-    accessible_point_count = 0
+    probe_free_point_count = 0
     batch_size = 10000
-    box_volume_nm3 = float(np.prod(final_box_lengths))
+    geometric_slit_volume_nm3 = slit_geometry.padded_geometric_volume_nm3(
+        surface_plane_padding_nm
+    )
 
     for batch_start in range(0, sample_count, batch_size):
         current_batch_size = min(batch_size, sample_count - batch_start)
-        sample_points = random_number_generator.random((current_batch_size, 3)) * final_box_lengths
+        sample_points = slit_geometry.sample_uniform_positions(
+            current_batch_size,
+            random_number_generator,
+            surface_plane_padding_nm,
+        )
         neighbor_lists = framework_tree.query_ball_point(
             sample_points,
             r=maximum_exclusion_radius_nm,
@@ -1428,7 +1544,7 @@ def _estimate_accessible_volume_nm3(
         )
         total_neighbor_count = int(np.sum(neighbor_counts))
         if total_neighbor_count == 0:
-            accessible_point_count += current_batch_size
+            probe_free_point_count += current_batch_size
             continue
 
         sample_indices = np.repeat(np.arange(current_batch_size, dtype=np.int32), neighbor_counts)
@@ -1439,25 +1555,29 @@ def _estimate_accessible_volume_nm3(
                 if neighbor_indices
             ]
         )
-        delta_vectors = framework_wrapped[atom_indices] - sample_points[sample_indices]
-        delta_vectors -= final_box_lengths * np.round(delta_vectors / final_box_lengths)
+        delta_vectors = minimum_image_displacements(
+            sample_points[sample_indices],
+            framework_wrapped[atom_indices],
+            box_lengths,
+        )
         squared_distances_nm2 = np.einsum("ij,ij->i", delta_vectors, delta_vectors)
         excluded_pairs = squared_distances_nm2 <= exclusion_radii_squared_nm2[atom_indices]
         excluded_points = np.zeros(current_batch_size, dtype=bool)
         if np.any(excluded_pairs):
             excluded_points[np.unique(sample_indices[excluded_pairs])] = True
-        accessible_point_count += int(np.count_nonzero(~excluded_points))
+        probe_free_point_count += int(np.count_nonzero(~excluded_points))
 
-    accessible_fraction = accessible_point_count / sample_count
-    accessible_volume_nm3 = accessible_fraction * box_volume_nm3
-    return accessible_volume_nm3, accessible_fraction
+    probe_free_fraction = probe_free_point_count / sample_count
+    probe_free_volume_nm3 = probe_free_fraction * geometric_slit_volume_nm3
+    return probe_free_volume_nm3, probe_free_fraction
 
 
 def _compute_density_estimate(
     guest_system: _GroSystem,
     framework_system: _GroSystem,
     framework_coordinates: FloatArray,
-    final_box_lengths: FloatArray,
+    slit_geometry: PeriodicSlitGeometry,
+    surface_plane_padding_nm: float,
     target_resname: str,
     remaining_guest_molecules: int,
     probe_radii_nm: tuple[float, ...],
@@ -1465,11 +1585,45 @@ def _compute_density_estimate(
     seed_count: int,
     random_seed: int | None,
 ) -> DensityEstimate:
-    """Compute box-average and slit-accessible guest density estimates."""
+    """Compute box-average and probe-free slit guest-density estimates.
+
+    Parameters
+    ----------
+    guest_system : _GroSystem
+        System that defines the target guest molecular mass.
+    framework_system : _GroSystem
+        Framework system used for probe exclusion.
+    framework_coordinates : ndarray
+        Framework coordinates in nanometers.
+    slit_geometry : PeriodicSlitGeometry
+        Periodic mean-plane slit geometry.
+    surface_plane_padding_nm : float
+        Signed padding applied to both mean surface planes in nanometers.
+    target_resname : str
+        Residue name used to identify one guest molecule.
+    remaining_guest_molecules : int
+        Number of guest molecules included in the mass.
+    probe_radii_nm : tuple[float, ...]
+        Probe radii in nanometers.
+    sample_count : int
+        Monte Carlo sample count per repeat.
+    seed_count : int
+        Number of repeats per probe radius.
+    random_seed : int or None
+        Optional deterministic seed source.
+
+    Returns
+    -------
+    DensityEstimate
+        Box-average and probe-free slit-volume density metrics.
+    """
 
     guest_molecule_mass_da = _compute_target_residue_mass_da(guest_system, target_resname)
     total_guest_mass_da = float(remaining_guest_molecules) * guest_molecule_mass_da
-    box_volume_nm3 = float(np.prod(final_box_lengths))
+    box_volume_nm3 = float(np.prod(slit_geometry.box_lengths_nm))
+    geometric_slit_volume_nm3 = slit_geometry.padded_geometric_volume_nm3(
+        surface_plane_padding_nm
+    )
     box_average_density_g_cm3 = (
         total_guest_mass_da * GRAMS_PER_DA / (box_volume_nm3 * CUBIC_CENTIMETERS_PER_NM3)
     )
@@ -1481,48 +1635,49 @@ def _compute_density_estimate(
         if deterministic_seed is not None:
             deterministic_seed += 1
 
-        accessible_volumes_nm3: list[float] = []
-        accessible_fractions: list[float] = []
-        accessible_densities_g_cm3: list[float] = []
+        probe_free_volumes_nm3: list[float] = []
+        probe_free_fractions: list[float] = []
+        probe_free_densities_g_cm3: list[float] = []
 
         for seed_value in seed_values:
-            accessible_volume_nm3, accessible_fraction = _estimate_accessible_volume_nm3(
+            probe_free_volume_nm3, probe_free_fraction = _estimate_probe_free_volume_nm3(
                 framework_system=framework_system,
                 framework_coordinates=framework_coordinates,
-                final_box_lengths=final_box_lengths,
+                slit_geometry=slit_geometry,
+                surface_plane_padding_nm=surface_plane_padding_nm,
                 probe_radius_nm=probe_radius_nm,
                 sample_count=sample_count,
                 random_seed=seed_value,
             )
-            accessible_volumes_nm3.append(accessible_volume_nm3)
-            accessible_fractions.append(accessible_fraction)
+            probe_free_volumes_nm3.append(probe_free_volume_nm3)
+            probe_free_fractions.append(probe_free_fraction)
 
-            if accessible_volume_nm3 <= 0.0:
+            if probe_free_volume_nm3 <= 0.0:
                 warnings.warn(
                     (
-                        "Accessible slit volume is non-positive for density probe radius "
+                        "Probe-free slit volume is non-positive for density probe radius "
                         f"{probe_radius_nm:.3f} nm and seed {seed_value}; reporting infinite "
-                        "accessible density for this repeat."
+                        "probe-free density for this repeat."
                     ),
                     stacklevel=2,
                 )
-                accessible_densities_g_cm3.append(float("inf"))
+                probe_free_densities_g_cm3.append(float("inf"))
             else:
-                accessible_densities_g_cm3.append(
+                probe_free_densities_g_cm3.append(
                     total_guest_mass_da
                     * GRAMS_PER_DA
-                    / (accessible_volume_nm3 * CUBIC_CENTIMETERS_PER_NM3)
+                    / (probe_free_volume_nm3 * CUBIC_CENTIMETERS_PER_NM3)
                 )
 
-        accessible_volume_values = tuple(accessible_volumes_nm3)
-        accessible_fraction_values = tuple(accessible_fractions)
-        accessible_density_values = tuple(accessible_densities_g_cm3)
+        probe_free_volume_values = tuple(probe_free_volumes_nm3)
+        probe_free_fraction_values = tuple(probe_free_fractions)
+        probe_free_density_values = tuple(probe_free_densities_g_cm3)
 
-        volume_mean_nm3 = float(np.mean(np.array(accessible_volume_values, dtype=np.float64)))
-        fraction_mean = float(np.mean(np.array(accessible_fraction_values, dtype=np.float64)))
-        if all(np.isfinite(value) for value in accessible_density_values):
+        volume_mean_nm3 = float(np.mean(np.array(probe_free_volume_values, dtype=np.float64)))
+        fraction_mean = float(np.mean(np.array(probe_free_fraction_values, dtype=np.float64)))
+        if all(np.isfinite(value) for value in probe_free_density_values):
             density_mean_g_cm3 = float(
-                np.mean(np.array(accessible_density_values, dtype=np.float64))
+                np.mean(np.array(probe_free_density_values, dtype=np.float64))
             )
         else:
             density_mean_g_cm3 = float("inf")
@@ -1531,15 +1686,15 @@ def _compute_density_estimate(
             DensityProbeEstimate(
                 probe_radius_nm=probe_radius_nm,
                 seed_values=seed_values,
-                accessible_fractions=accessible_fraction_values,
-                accessible_volumes_nm3=accessible_volume_values,
-                accessible_densities_g_cm3=accessible_density_values,
-                accessible_fraction_mean=fraction_mean,
-                accessible_fraction_std=_compute_repeated_std(accessible_fraction_values),
-                accessible_volume_mean_nm3=volume_mean_nm3,
-                accessible_volume_std_nm3=_compute_repeated_std(accessible_volume_values),
-                accessible_density_mean_g_cm3=density_mean_g_cm3,
-                accessible_density_std_g_cm3=_compute_repeated_std(accessible_density_values),
+                probe_free_fractions=probe_free_fraction_values,
+                probe_free_volumes_nm3=probe_free_volume_values,
+                probe_free_densities_g_cm3=probe_free_density_values,
+                probe_free_fraction_mean=fraction_mean,
+                probe_free_fraction_std=_compute_repeated_std(probe_free_fraction_values),
+                probe_free_volume_mean_nm3=volume_mean_nm3,
+                probe_free_volume_std_nm3=_compute_repeated_std(probe_free_volume_values),
+                probe_free_density_mean_g_cm3=density_mean_g_cm3,
+                probe_free_density_std_g_cm3=_compute_repeated_std(probe_free_density_values),
             )
         )
 
@@ -1548,6 +1703,8 @@ def _compute_density_estimate(
         total_guest_mass_da=total_guest_mass_da,
         box_volume_nm3=box_volume_nm3,
         box_average_density_g_cm3=box_average_density_g_cm3,
+        geometric_slit_volume_nm3=geometric_slit_volume_nm3,
+        surface_plane_padding_nm=surface_plane_padding_nm,
         sample_count_per_seed=sample_count,
         seed_count=seed_count,
         probe_estimates=tuple(probe_estimates),
@@ -1568,7 +1725,7 @@ def _build_ring_geometry(
         final_box_lengths,
     )
     ring_center = np.mean(ring_coordinates, axis=0)
-    wrapped_center = _wrap_positions(ring_center[np.newaxis, :], final_box_lengths)[0]
+    wrapped_center = wrap_positions(ring_center[np.newaxis, :], final_box_lengths)[0]
     image_shift = ring_center - wrapped_center
     ring_coordinates = ring_coordinates - image_shift
     ring_center = ring_center - image_shift
@@ -1695,7 +1852,7 @@ def _build_slit_bond_geometries(
             start_point = residue_coordinates[bond_definition.start_atom_index]
             stop_point = residue_coordinates[bond_definition.stop_atom_index]
             midpoint = 0.5 * (start_point + stop_point)
-            wrapped_midpoint = _wrap_positions(midpoint[np.newaxis, :], final_box_lengths)[0]
+            wrapped_midpoint = wrap_positions(midpoint[np.newaxis, :], final_box_lengths)[0]
             bond_geometries.append(
                 _BondSegmentGeometry(
                     residue_index=residue_index,
@@ -1882,7 +2039,7 @@ def _identify_clashing_target_residues(
     removed_by_forward_ring = np.zeros(residue_count, dtype=bool)
     removed_by_reverse_ring = np.zeros(residue_count, dtype=bool)
 
-    slit_wrapped = _wrap_positions(slit_coordinates, final_box_lengths)
+    slit_wrapped = wrap_positions(slit_coordinates, final_box_lengths)
     slit_tree = cKDTree(slit_wrapped, boxsize=final_box_lengths)
 
     candidate_atoms = np.zeros(guest_system.atom_count, dtype=bool)
@@ -1892,7 +2049,7 @@ def _identify_clashing_target_residues(
 
     if np.any(candidate_atoms):
         candidate_atom_indices = np.flatnonzero(candidate_atoms)
-        wrapped_candidate_coordinates = _wrap_positions(
+        wrapped_candidate_coordinates = wrap_positions(
             translated_guest_coordinates[candidate_atom_indices],
             final_box_lengths,
         )
@@ -1974,7 +2131,10 @@ def _identify_clashing_target_residues(
 
             residue_coordinates = translated_guest_coordinates[residue_span.start:residue_span.stop]
             residue_center = np.mean(residue_coordinates, axis=0)
-            residue_center_wrapped = _wrap_positions(residue_center[np.newaxis, :], final_box_lengths)[0]
+            residue_center_wrapped = wrap_positions(
+                residue_center[np.newaxis, :],
+                final_box_lengths,
+            )[0]
             residue_radius_nm = float(np.max(np.linalg.norm(residue_coordinates - residue_center, axis=1)))
             query_radius_nm = (
                 residue_radius_nm
@@ -2282,38 +2442,104 @@ def _format_probe_block(probe_estimate: DensityProbeEstimate) -> str:
 
     density_values = " ".join(
         "inf" if not np.isfinite(value) else f"{value:.6f}"
-        for value in probe_estimate.accessible_densities_g_cm3
+        for value in probe_estimate.probe_free_densities_g_cm3
     )
     density_mean = (
         "inf"
-        if not np.isfinite(probe_estimate.accessible_density_mean_g_cm3)
-        else f"{probe_estimate.accessible_density_mean_g_cm3:.6f}"
+        if not np.isfinite(probe_estimate.probe_free_density_mean_g_cm3)
+        else f"{probe_estimate.probe_free_density_mean_g_cm3:.6f}"
     )
     density_std = (
         "inf"
-        if not np.isfinite(probe_estimate.accessible_density_std_g_cm3)
-        else f"{probe_estimate.accessible_density_std_g_cm3:.6f}"
+        if not np.isfinite(probe_estimate.probe_free_density_std_g_cm3)
+        else f"{probe_estimate.probe_free_density_std_g_cm3:.6f}"
     )
     rows = [
         ("Probe radius", f"{probe_estimate.probe_radius_nm:.3f} nm"),
         ("Seed values", " ".join(str(seed_value) for seed_value in probe_estimate.seed_values)),
         (
-            "Accessible fractions",
-            " ".join(f"{value:.6f}" for value in probe_estimate.accessible_fractions),
+            "Probe-free fractions",
+            " ".join(f"{value:.6f}" for value in probe_estimate.probe_free_fractions),
         ),
         (
-            "Accessible volumes",
-            " ".join(f"{value:.6f}" for value in probe_estimate.accessible_volumes_nm3) + " nm^3",
+            "Probe-free volumes",
+            " ".join(f"{value:.6f}" for value in probe_estimate.probe_free_volumes_nm3)
+            + " nm^3",
         ),
-        ("Accessible densities", density_values + " g/cm^3"),
-        ("Mean fraction", f"{probe_estimate.accessible_fraction_mean:.6f}"),
-        ("Std fraction", f"{probe_estimate.accessible_fraction_std:.6f}"),
-        ("Mean volume", f"{probe_estimate.accessible_volume_mean_nm3:.6f} nm^3"),
-        ("Std volume", f"{probe_estimate.accessible_volume_std_nm3:.6f} nm^3"),
+        ("Probe-free densities", density_values + " g/cm^3"),
+        ("Mean fraction", f"{probe_estimate.probe_free_fraction_mean:.6f}"),
+        ("Std fraction", f"{probe_estimate.probe_free_fraction_std:.6f}"),
+        ("Mean volume", f"{probe_estimate.probe_free_volume_mean_nm3:.6f} nm^3"),
+        ("Std volume", f"{probe_estimate.probe_free_volume_std_nm3:.6f} nm^3"),
         ("Mean density", density_mean + " g/cm^3"),
         ("Std density", density_std + " g/cm^3"),
     ]
     return _format_value_lines(f"Probe {probe_estimate.probe_radius_nm:.2f} nm", rows)
+
+
+def _format_geometry_block(
+    title: str,
+    slit_geometry: PeriodicSlitGeometry,
+    padding_nm: float,
+) -> str:
+    """Format one periodic slit geometry report section.
+
+    Parameters
+    ----------
+    title : str
+        Section heading.
+    slit_geometry : PeriodicSlitGeometry
+        Geometry to report.
+    padding_nm : float
+        Signed plane padding used by the workflow.
+
+    Returns
+    -------
+    str
+        Human-readable geometry section.
+    """
+
+    roughness = (
+        "not available"
+        if slit_geometry.normal_roughness_rms_nm is None
+        else f"{slit_geometry.normal_roughness_rms_nm:.5f} nm"
+    )
+    support_count = (
+        "not available"
+        if slit_geometry.surface_support_count is None
+        else str(slit_geometry.surface_support_count)
+    )
+    return _format_value_lines(
+        title,
+        [
+            ("Normal axis", slit_geometry.normal_axis_name),
+            ("Axis index", str(slit_geometry.normal_axis_index)),
+            ("Lower mean plane", f"{slit_geometry.lower_plane_nm:.5f} nm"),
+            ("Upper mean plane", f"{slit_geometry.upper_plane_nm:.5f} nm"),
+            ("Interval wraps", str(slit_geometry.interval_wraps)),
+            ("Mean-plane separation", f"{slit_geometry.plane_separation_nm:.5f} nm"),
+            ("Signed padding", f"{padding_nm:.5f} nm"),
+            ("Padded width", f"{slit_geometry.padded_width_nm(padding_nm):.5f} nm"),
+            (
+                "Projected area per face",
+                f"{slit_geometry.projected_area_per_face_nm2:.5f} nm^2",
+            ),
+            (
+                "Total projected surface area",
+                f"{slit_geometry.total_projected_surface_area_nm2:.5f} nm^2",
+            ),
+            (
+                "Geometric slit volume",
+                f"{slit_geometry.geometric_slit_volume_nm3:.5f} nm^3",
+            ),
+            (
+                "Padded geometric volume",
+                f"{slit_geometry.padded_geometric_volume_nm3(padding_nm):.5f} nm^3",
+            ),
+            ("Surface support positions", support_count),
+            ("Normal RMS roughness", roughness),
+        ],
+    )
 
 
 def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> str:
@@ -2348,24 +2574,15 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
             ),
         ],
     )
-    surface_planes = _format_value_lines(
-        "Surface planes",
-        [
-            ("Detected axis", report.surface_plane_region.axis_name),
-            ("Axis index", str(report.surface_plane_region.axis_index)),
-            ("Lower plane", f"{report.surface_plane_region.lower_plane_nm:.5f} nm"),
-            ("Upper plane", f"{report.surface_plane_region.upper_plane_nm:.5f} nm"),
-            ("Interval wraps", str(report.surface_plane_region.interval_wraps)),
-            (
-                "Accessible width",
-                f"{report.surface_plane_region.accessible_width_nm:.5f} nm",
-            ),
-            ("Padding", f"{report.surface_plane_region.padding_nm:.5f} nm"),
-            (
-                "Surface Si atoms used",
-                str(report.surface_plane_region.surface_si_atom_count),
-            ),
-        ],
+    input_geometry = _format_geometry_block(
+        "Input slit geometry",
+        report.input_slit_geometry,
+        config.surface_plane_padding_nm,
+    )
+    output_geometry = _format_geometry_block(
+        "Output slit geometry",
+        report.output_slit_geometry,
+        config.surface_plane_padding_nm,
     )
     clash_filters = _format_value_lines(
         "Clash filters",
@@ -2434,6 +2651,10 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
             ("Total guest mass", f"{report.density_estimate.total_guest_mass_da:.5f} Da"),
             ("Box volume", f"{report.density_estimate.box_volume_nm3:.5f} nm^3"),
             (
+                "Padded geometric slit volume",
+                f"{report.density_estimate.geometric_slit_volume_nm3:.5f} nm^3",
+            ),
+            (
                 "Box-average density",
                 f"{report.density_estimate.box_average_density_g_cm3:.5f} g/cm^3",
             ),
@@ -2474,7 +2695,8 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
         "Slit Fill Report\n================",
         inputs,
         selection,
-        surface_planes,
+        input_geometry,
+        output_geometry,
         clash_filters,
         ring_checks,
         density,
@@ -2509,6 +2731,11 @@ def _build_density_report_text(config: SlitDensityConfig, report: SlitDensityRep
             ("Framework residues", str(report.framework_residue_count)),
         ],
     )
+    geometry = _format_geometry_block(
+        "Slit geometry",
+        report.slit_geometry,
+        config.surface_plane_padding_nm,
+    )
     density_summary = _format_value_lines(
         "Density summary",
         [
@@ -2518,6 +2745,10 @@ def _build_density_report_text(config: SlitDensityConfig, report: SlitDensityRep
             ),
             ("Total guest mass", f"{report.density_estimate.total_guest_mass_da:.5f} Da"),
             ("Box volume", f"{report.density_estimate.box_volume_nm3:.5f} nm^3"),
+            (
+                "Padded geometric slit volume",
+                f"{report.density_estimate.geometric_slit_volume_nm3:.5f} nm^3",
+            ),
             (
                 "Box-average density",
                 f"{report.density_estimate.box_average_density_g_cm3:.5f} g/cm^3",
@@ -2539,6 +2770,7 @@ def _build_density_report_text(config: SlitDensityConfig, report: SlitDensityRep
         inputs,
         counts,
         framework,
+        geometry,
         probe_details,
         density_summary,
     ]
@@ -2572,10 +2804,11 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         final_box_lengths=final_box_lengths,
     )
 
-    surface_plane_region = _infer_surface_plane_region(
+    input_slit_geometry = _resolve_slit_geometry(
         slit_system=slit_system,
         slit_coordinates=centered_slit_coordinates,
-        box_lengths=final_box_lengths,
+        explicit_geometry=config.slit_geometry,
+        geometry_path=config.slit_geometry_path,
         padding_nm=config.surface_plane_padding_nm,
     )
     surface_plane_removed_mask = np.zeros(len(guest_system.residue_spans), dtype=bool)
@@ -2586,8 +2819,8 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
             translated_guest_coordinates=translated_guest_coordinates,
             selected_residue_mask=cropped_residue_mask,
             target_resname=config.target_resname,
-            plane_region=surface_plane_region,
-            box_lengths=final_box_lengths,
+            slit_geometry=input_slit_geometry,
+            padding_nm=config.surface_plane_padding_nm,
         )
         selected_residue_mask = surface_plane_selection.selected_residue_mask
         surface_plane_removed_mask = surface_plane_selection.removed_residue_mask
@@ -2612,7 +2845,10 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         removed_residue_mask=clash_selection.removed_residue_mask,
     )
 
-    output_axis_permutation = _build_output_axis_permutation(surface_plane_region.axis_index)
+    output_axis_permutation = _build_output_axis_permutation(
+        input_slit_geometry.normal_axis_index
+    )
+    output_slit_geometry = input_slit_geometry.permute_axes(output_axis_permutation)
     output_box_lengths = _permute_box_axes(
         box_lengths=final_box_lengths,
         axis_permutation=output_axis_permutation,
@@ -2694,7 +2930,8 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         guest_system=guest_system,
         framework_system=slit_system,
         framework_coordinates=centered_slit_coordinates,
-        final_box_lengths=final_box_lengths,
+        slit_geometry=input_slit_geometry,
+        surface_plane_padding_nm=config.surface_plane_padding_nm,
         target_resname=config.target_resname,
         remaining_guest_molecules=remaining_guest_molecules,
         probe_radii_nm=config.density_probe_radii_nm,
@@ -2707,7 +2944,8 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         initial_guest_molecules=initial_guest_molecules,
         cropped_guest_molecules=cropped_guest_molecules,
         removed_outside_crop_guest_molecules=removed_outside_crop_guest_molecules,
-        surface_plane_region=surface_plane_region,
+        input_slit_geometry=input_slit_geometry,
+        output_slit_geometry=output_slit_geometry,
         surface_plane_filtered_guest_molecules=surface_plane_filtered_guest_molecules,
         removed_by_surface_plane_guest_molecules=removed_by_surface_plane_guest_molecules,
         removed_by_general_cutoff_guest_molecules=removed_by_general_cutoff_guest_molecules,
@@ -2739,6 +2977,11 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     )
 
     report_text = _build_fill_report_text(config, report)
+    _write_slit_geometry_metadata(
+        config.output_path.with_suffix(".yml"),
+        output_slit_geometry,
+        config.surface_plane_padding_nm,
+    )
     assert config.log_path is not None
     config.log_path.write_text(report_text, encoding="utf-8")
     return report
@@ -2773,11 +3016,19 @@ def estimate_guest_density(config: SlitDensityConfig) -> SlitDensityReport:
         merged_system=merged_system,
         target_resname=config.target_resname,
     )
+    slit_geometry = _resolve_slit_geometry(
+        slit_system=framework_system,
+        slit_coordinates=framework_system.coordinates,
+        explicit_geometry=config.slit_geometry,
+        geometry_path=config.slit_geometry_path,
+        padding_nm=config.surface_plane_padding_nm,
+    )
     density_estimate = _compute_density_estimate(
         guest_system=merged_system,
         framework_system=framework_system,
         framework_coordinates=framework_system.coordinates,
-        final_box_lengths=merged_system.box_lengths,
+        slit_geometry=slit_geometry,
+        surface_plane_padding_nm=config.surface_plane_padding_nm,
         target_resname=config.target_resname,
         remaining_guest_molecules=guest_molecule_count,
         probe_radii_nm=config.density_probe_radii_nm,
@@ -2790,6 +3041,7 @@ def estimate_guest_density(config: SlitDensityConfig) -> SlitDensityReport:
         guest_atom_count=guest_atom_count,
         framework_atom_count=framework_system.atom_count,
         framework_residue_count=len(framework_system.residue_spans),
+        slit_geometry=slit_geometry,
         density_estimate=density_estimate,
     )
     report_text = _build_density_report_text(config, report)
@@ -2832,6 +3084,16 @@ def _build_fill_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional report path. Defaults to <output_stem>.log next to the output GRO.",
+    )
+    parser.add_argument(
+        "--slit-geometry",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit schema-v1 slit geometry YAML file. When omitted, geometry "
+            "is inferred from hydroxylated surface Si atoms; neighboring files "
+            "are not discovered automatically."
+        ),
     )
     parser.add_argument(
         "--target-resname",
@@ -2902,7 +3164,7 @@ def _build_fill_argument_parser() -> argparse.ArgumentParser:
         type=float,
         action="append",
         help=(
-            "Probe radius in nm used to estimate accessible slit volume. "
+            "Probe radius in nm used to estimate probe-free slit volume. "
             "Repeat this option to request multiple probe radii. The default "
             "set is 0.00, 0.14, and 0.20 nm."
         ),
@@ -2945,8 +3207,8 @@ def _build_density_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Estimate target guest density inside an already merged slit structure "
-            "by counting target molecules and computing framework-only accessible "
-            "volume with the same Monte Carlo method used during filling."
+            "by counting target molecules and computing framework-excluded, "
+            "probe-free volume inside the mean-plane slit interval."
         )
     )
     parser.add_argument(
@@ -2965,6 +3227,16 @@ def _build_density_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--slit-geometry",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit schema-v1 slit geometry YAML file. When omitted, geometry "
+            "is inferred from hydroxylated surface Si atoms; neighboring files "
+            "are not discovered automatically."
+        ),
+    )
+    parser.add_argument(
         "--target-resname",
         default=SlitDensityConfig.target_resname,
         help="Residue name used to identify guest molecules. Default: %(default)s",
@@ -2974,7 +3246,7 @@ def _build_density_argument_parser() -> argparse.ArgumentParser:
         type=float,
         action="append",
         help=(
-            "Probe radius in nm used to estimate accessible slit volume. "
+            "Probe radius in nm used to estimate probe-free slit volume. "
             "Repeat this option to request multiple probe radii. The default "
             "set is 0.00, 0.14, and 0.20 nm."
         ),
@@ -2995,6 +3267,16 @@ def _build_density_argument_parser() -> argparse.ArgumentParser:
         help=(
             "Number of independent Monte Carlo repeats used for each probe "
             "radius. Default: %(default)s"
+        ),
+    )
+    parser.add_argument(
+        "--surface-plane-padding",
+        type=float,
+        default=SlitDensityConfig.surface_plane_padding_nm,
+        help=(
+            "Signed padding in nm applied on each side of the mean-plane slit "
+            "interval before sampling. Positive values shrink the interval; "
+            "negative values expand it. Default: %(default)s"
         ),
     )
     parser.add_argument(
@@ -3036,6 +3318,7 @@ def fill_slit_main(argv: Sequence[str] | None = None) -> SlitFillReport:
         slit_path=args.slit,
         output_path=args.output,
         log_path=args.log,
+        slit_geometry_path=args.slit_geometry,
         target_resname=args.target_resname,
         general_cutoff_nm=args.general_cutoff,
         ring_atom_prefix=args.ring_atom_prefix,
@@ -3094,10 +3377,12 @@ def estimate_guest_density_main(argv: Sequence[str] | None = None) -> SlitDensit
     config = SlitDensityConfig(
         input_path=args.input,
         log_path=args.log,
+        slit_geometry_path=args.slit_geometry,
         target_resname=args.target_resname,
         density_probe_radii_nm=probe_radii,
         density_sample_count=args.density_samples,
         density_seed_count=args.density_seed_count,
+        surface_plane_padding_nm=args.surface_plane_padding,
         random_seed=args.random_seed,
     )
     return estimate_guest_density(config)

@@ -114,8 +114,27 @@ silicams-slit-density --help
 ```
 
 The equivalent Python APIs are `sms.fill_slit(...)` and
-`sms.estimate_guest_density(...)`. Density reports include reusable raw
-numerical data; plotting workflows must also export their plot data as CSV.
+`sms.estimate_guest_density(...)`. Both workflows use
+`sms.PeriodicSlitGeometry`, which records an orthorhombic box, the slit-normal
+axis, two fitted mean surface planes, projected interfacial area, geometric
+slit volume, surface support count, and normal RMS roughness. Construction
+writes this unit-explicit schema-v1 geometry to `<system_name>.yml`; filling
+writes the output-frame geometry to `<output_stem>.yml`.
+
+Pass geometry explicitly with `slit_geometry=` in Python or
+`--slit-geometry PATH` on the command line. If neither an object nor a path is
+provided, geometry is inferred from hydroxylated surface Si atoms. Neighboring
+YAML files are never selected automatically, so fully functionalized systems
+whose surface Si atoms can no longer be inferred should use the geometry file
+written by construction or filling.
+
+Density Monte Carlo points are sampled uniformly only inside the signed-padded
+mean-plane interval. Framework van der Waals radii plus each requested probe
+radius then define the reported **probe-free volume**. This is a geometric
+exclusion estimate; it does not establish solvent connectivity, reachability,
+or experimentally accessible pore volume. Reports retain every seed-level
+fraction, volume, and density. Plotting workflows must also export their plot
+data as CSV.
 
 ## Output and extension APIs
 
@@ -147,11 +166,17 @@ the existing `SilicaSlit`-style domain and shared writer snapshot.
 Use the project environment directly:
 
 ```bash
-/Users/dm/miniforge3/envs/md/bin/python3 -m pytest --cov=silicams
+/Users/dm/miniforge3/envs/md/bin/python3 -m pytest \
+    -n auto --dist loadgroup --cov=silicams --cov-report=term-missing
 /Users/dm/miniforge3/envs/md/bin/python3 -m sphinx -W -b html docs docs/_build/html
 /Users/dm/miniforge3/envs/md/bin/python3 -m pip wheel . \
     --no-deps --no-build-isolation --wheel-dir /tmp/silicams-wheel
 ```
+
+The scope-aware parallel distribution keeps each expensive slit fixture in a
+single worker while running independent large-bare, small-bare, and
+functionalized workflows concurrently. Use plain ``python -m pytest`` when a
+serial run is preferable for debugging.
 
 The `dev` extra installs the declared Setuptools build backend so the explicit
 no-build-isolation wheel check runs against the prepared project environment.

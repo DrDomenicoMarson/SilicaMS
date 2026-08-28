@@ -22,7 +22,7 @@ jobs:
       - name: Run critical Ruff checks
         run: python -m ruff check .
       - name: Run tests with local coverage reporting
-        run: python -m pytest --cov=silicams --cov-report=term-missing
+        run: python -m pytest -n auto --dist loadgroup --cov=silicams --cov-report=term-missing
       - name: Build installation wheel
         run: python -m pip wheel . --no-deps --no-build-isolation --wheel-dir /tmp/silicams-wheel
       - name: Inspect wheel namespace

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .slit_geometry import minimum_image_displacements
+
 
 @dataclass
 class _DiceSearchCache:
@@ -253,15 +255,13 @@ class Dice:
         delta : np.ndarray
             Minimum-image displacement vectors with shape ``(m, 3)``.
         """
-        delta = self._cache.positions[atom_id] - partner_positions
-        wrap_mask = np.abs(delta) > (3 * self._size)
-        if np.any(wrap_mask):
-            box_rows = np.broadcast_to(self._cache.box, delta.shape)
-            delta = delta.copy()
-            delta[wrap_mask] -= box_rows[wrap_mask] * np.round(
-                delta[wrap_mask] / box_rows[wrap_mask]
-            )
-        return delta
+        if not self._is_pbc:
+            return self._cache.positions[atom_id] - partner_positions
+        return minimum_image_displacements(
+            partner_positions,
+            self._cache.positions[atom_id],
+            self._cache.box,
+        )
 
     def _find_bond(self, cube_list, atom_type, distance):
         """Search for atom pairs in the given cubes.

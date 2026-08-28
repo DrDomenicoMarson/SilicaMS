@@ -25,6 +25,15 @@ def main(argv: Sequence[str] | None = None) -> sms.SlitFillReport:
     parser.add_argument("guest", type=Path, help="Guest-reservoir GRO file")
     parser.add_argument("slit", type=Path, help="Generated silica-slit GRO file")
     parser.add_argument("output", type=Path, help="Filled output GRO file")
+    parser.add_argument(
+        "--slit-geometry",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit schema-v1 geometry YAML from slit construction; use this "
+            "for a fully functionalized framework that cannot be inferred"
+        ),
+    )
     parser.add_argument("--resname", default="THY", help="Guest residue name")
     args = parser.parse_args(argv)
 
@@ -33,6 +42,7 @@ def main(argv: Sequence[str] | None = None) -> sms.SlitFillReport:
             guest_path=args.guest,
             slit_path=args.slit,
             output_path=args.output,
+            slit_geometry_path=args.slit_geometry,
             target_resname=args.resname,
         )
     )

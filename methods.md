@@ -28,10 +28,22 @@ optional tolerance fallback selects the nearest realizable composition within
 the configured per-state fraction tolerance.
 
 Siloxane bridge candidates are chosen from eligible surface-silicon pairs.
-Candidate oxygen placements are generated perpendicular to the pair axis,
-wrapped through the periodic cell, and rejected when local steric clearance is
-negative. Default ordering is deterministic. Setting `random_seed` randomizes
-chemically equivalent bridge and attachment choices reproducibly.
+Candidate-pair distances, bridge vectors, adjacency, and steric clearances use
+one orthorhombic minimum-image convention, including pairs that cross a box
+face. Candidate oxygen placements are generated perpendicular to the pair
+axis, wrapped through the periodic cell, and rejected when local steric
+clearance is negative. Default ordering is deterministic. Setting
+`random_seed` randomizes chemically equivalent bridge and attachment choices
+reproducibly.
+
+The physical slit geometry is fitted from the normal coordinates of the
+initial exposed surface-silicon sites. Sites are divided into two periodic face
+clusters, and each surface plane is the periodic mean of its cluster. The
+pooled normal RMS displacement is stored as a roughness diagnostic rather than
+being folded into the width. Geometric slit volume is the mean-plane
+separation multiplied by the projected periodic area of one face. Reported
+total surface area is twice that face area; it is not the full area of the
+orthorhombic box.
 
 ## Functionalization
 
@@ -65,10 +77,28 @@ and `strict` modes.
 
 The filling workflow selects complete guest residues from a larger reservoir,
 rejects general all-atom clashes and aromatic-ring crossings, and optionally
-restricts guest atoms to the detected accessible slit interval. Density
-analysis estimates accessible volume for configured probe radii through
-repeated seeded sampling and records all reusable numerical results in its
-structured report.
+requires every guest atom to lie inside a signed-padded mean-plane slit
+interval. Positive padding contracts both faces; negative padding expands the
+interval, but the validated padded width must remain positive and cannot
+exceed the periodic box length along the slit normal.
+
+Geometry is resolved from an explicit `PeriodicSlitGeometry`, an explicitly
+named schema-v1 YAML file, or hydroxylated-surface-Si inference. No neighboring
+metadata file is discovered automatically. The explicit geometry route is
+therefore required when chemical functionalization removes the hydroxylated
+surface signature needed for inference.
+
+For each configured probe radius, density analysis samples points uniformly
+inside the padded geometric slit interval, not throughout the full simulation
+box. A point is probe-free when it lies outside every framework van der Waals
+radius enlarged by that probe radius under orthorhombic periodic boundary
+conditions. The probe-free fraction is normalized by the padded geometric
+slit volume, and the guest mass divided by the corresponding probe-free volume
+gives the reported probe-free density. Repeated seeded estimates retain all
+seed-level values. This local geometric exclusion does not test whether free
+regions are connected to one another or reachable from a reservoir, so it
+must not be interpreted as a connectivity-based or experimental accessible
+pore volume.
 
 ## Lineage
 

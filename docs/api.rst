@@ -25,6 +25,12 @@ Slit model
 .. automodule:: silicams.slit_system
    :members:
 
+Periodic slit geometry
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: silicams.slit_geometry
+   :members:
+
 Slit filling
 ~~~~~~~~~~~~
 

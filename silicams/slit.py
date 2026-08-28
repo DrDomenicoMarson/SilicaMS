@@ -23,6 +23,12 @@ from . import geometry, utils
 from silicams.dice import Dice
 from silicams.matrix import Matrix
 from silicams.molecule import Molecule
+from silicams.slit_geometry import (
+    PeriodicSlitGeometry,
+    minimum_image_displacements,
+    pairwise_minimum_image_distances,
+    wrap_positions,
+)
 from silicams.topology import (
     BareSilicaChargeDiagnostics,
     FunctionalizedSlitChargeDiagnostics,
@@ -638,12 +644,11 @@ class SlitPreparationReport:
         Slit-system name.
     temperature_k : float
         Target simulation temperature in Kelvin.
-    box_nm : list[float]
-        Periodic simulation box in nanometers after slit preparation.
-    slit_width_nm : float
-        Requested slit width.
-    wall_thickness_nm : float
-        Silica wall thickness on each side of the slit.
+    requested_slit_width_nm : float
+        User-requested slit width in nanometers. The fitted physical separation
+        is stored on ``slit_geometry``.
+    slit_geometry : PeriodicSlitGeometry
+        Fitted periodic mean-plane geometry used by downstream workflows.
     site_ex : int
         Number of exterior surface sites.
     siloxane_bridges : int
@@ -690,9 +695,8 @@ class SlitPreparationReport:
 
     name: str
     temperature_k: float
-    box_nm: list[float]
-    slit_width_nm: float
-    wall_thickness_nm: float
+    requested_slit_width_nm: float
+    slit_geometry: PeriodicSlitGeometry
     site_ex: int
     siloxane_bridges: int
     siloxane_distance_range_nm: tuple[float, float]
@@ -1238,70 +1242,6 @@ def _duplicate_template_splits(matrix, atoms_per_copy, repeat_y, split_pairs):
             matrix.split(atom_a + offset, atom_b + offset)
 
 
-def _site_distance(pos_a, pos_b):
-    """Calculate the direct distance between two silicon positions.
-
-    Parameters
-    ----------
-    pos_a : list[float]
-        First position vector.
-    pos_b : list[float]
-        Second position vector.
-
-    Returns
-    -------
-    distance : float
-        Euclidean distance.
-    """
-    return geometry.length(geometry.vector(pos_a, pos_b))
-
-
-def _minimum_image_vector(pos_a, pos_b, box):
-    """Return the minimum-image vector between two positions.
-
-    Parameters
-    ----------
-    pos_a : list[float]
-        First Cartesian position.
-    pos_b : list[float]
-        Second Cartesian position.
-    box : list[float]
-        Periodic box lengths.
-
-    Returns
-    -------
-    vector : list[float]
-        Minimum-image vector from ``pos_a`` to ``pos_b``.
-    """
-    vector = geometry.vector(pos_a, pos_b)
-    for dim, length in enumerate(box):
-        if length > 0:
-            vector[dim] -= length * round(vector[dim] / length)
-    return vector
-
-
-def _wrap_position(pos, box):
-    """Wrap a Cartesian position back into the periodic box.
-
-    Parameters
-    ----------
-    pos : list[float]
-        Cartesian position.
-    box : list[float]
-        Periodic box lengths.
-
-    Returns
-    -------
-    wrapped_pos : list[float]
-        Box-wrapped Cartesian position.
-    """
-    wrapped_pos = pos[:]
-    for dim, length in enumerate(box):
-        if length > 0:
-            wrapped_pos[dim] %= length
-    return wrapped_pos
-
-
 def _active_silicon_count(system):
     """Count active silicon atoms in the current slit model.
 
@@ -1812,8 +1752,7 @@ def _build_slit_site_adjacency(kit, site_ids, distance_range):
     if not cache.site_ids:
         return adjacency
 
-    delta = cache.positions[:, None, :] - cache.positions[None, :, :]
-    distances = np.sqrt(np.einsum("ijk,ijk->ij", delta, delta))
+    distances = pairwise_minimum_image_distances(cache.positions, kit.box_nm)
     pair_mask = (
         (distances >= distance_range[0])
         & (distances <= distance_range[1])
@@ -1971,11 +1910,11 @@ def _bridge_candidate_positions(kit, pair):
     box = kit.box_nm
     pos_a = kit.atom_position(pair[0])
     pos_b = kit.atom_position(pair[1])
-    pair_vector = _minimum_image_vector(pos_a, pos_b, box)
-    center_pos = _wrap_position(
-        [pos_a[dim] + 0.5 * pair_vector[dim] for dim in range(3)],
+    pair_vector = minimum_image_displacements(pos_a, pos_b, box)
+    center_pos = wrap_positions(
+        np.asarray(pos_a, dtype=float) + 0.5 * pair_vector,
         box,
-    )
+    ).tolist()
     axis_unit = geometry.unit(pair_vector)
     base_direction = _bridge_base_direction(kit, pair, center_pos, axis_unit)
 
@@ -1983,35 +1922,13 @@ def _bridge_candidate_positions(kit, pair):
     for angle in _BRIDGE_CANDIDATE_ROTATIONS_DEG:
         direction = geometry.rotate(base_direction, axis_unit, angle, True)
         positions.append(
-            _wrap_position(
-                [center_pos[dim] + _BRIDGE_OFFSET_NM * direction[dim] for dim in range(3)],
+            wrap_positions(
+                np.asarray(center_pos, dtype=float) + _BRIDGE_OFFSET_NM * np.asarray(direction),
                 box,
-            )
+            ).tolist()
         )
 
     return positions
-
-
-def _minimum_image_delta_array(reference_position, positions, box):
-    """Return minimum-image displacement vectors to many positions.
-
-    Parameters
-    ----------
-    reference_position : list[float] or np.ndarray
-        Cartesian reference position.
-    positions : np.ndarray
-        Cartesian partner positions with shape ``(n, 3)``.
-    box : np.ndarray
-        Periodic box lengths with shape ``(3,)``.
-
-    Returns
-    -------
-    delta : np.ndarray
-        Minimum-image displacement vectors with shape ``(n, 3)``.
-    """
-    delta = positions - np.asarray(reference_position, dtype=float)
-    delta -= box * np.round(delta / box)
-    return delta
 
 
 def _min_clearance_by_atom_ids(system, atom_ids):
@@ -2129,7 +2046,7 @@ def _bridge_clearance_from_arrays(bridge_position, box, positions, min_distances
     if positions.size == 0:
         return _BRIDGE_STERIC_DISTANCE_CUTOFF_NM
 
-    delta = _minimum_image_delta_array(bridge_position, positions, box)
+    delta = minimum_image_displacements(bridge_position, positions, box)
     local_mask = np.all(np.abs(delta) <= _BRIDGE_STERIC_DISTANCE_CUTOFF_NM, axis=1)
     if not np.any(local_mask):
         return _BRIDGE_STERIC_DISTANCE_CUTOFF_NM
@@ -2812,7 +2729,6 @@ def _build_report(
         Report summarizing the slit build.
     """
     system = target_attempt.system
-    wall_thickness = (system.box_nm[1] - config.slit_width_nm) / 2
     diagnostics = system.preparation_diagnostics
     timing_summary = (
         target_attempt.timing_summary
@@ -2823,9 +2739,8 @@ def _build_report(
     return SlitPreparationReport(
         name=config.name,
         temperature_k=config.temperature_k,
-        box_nm=list(system.box_nm),
-        slit_width_nm=config.slit_width_nm,
-        wall_thickness_nm=wall_thickness,
+        requested_slit_width_nm=config.slit_width_nm,
+        slit_geometry=system.geometry,
         site_ex=0,
         siloxane_bridges=target_attempt.siloxane_bridges,
         siloxane_distance_range_nm=tuple(config.siloxane_distance_range_nm),
@@ -3253,6 +3168,59 @@ def write_bare_amorphous_slit(
     >>> _ = result.bare_charge_diagnostics.is_neutral
     """
     result = prepare_amorphous_slit_surface(config=config)
+    return _write_prepared_bare_result(
+        result=result,
+        output_dir=output_dir,
+        write_object_files=write_object_files,
+        write_pdb=write_pdb,
+        write_pdb_conect=write_pdb_conect,
+        write_cif=write_cif,
+        write_cif_bonds=write_cif_bonds,
+        validate_connectivity=validate_connectivity,
+    )
+
+
+def _write_prepared_bare_result(
+    result,
+    output_dir,
+    write_object_files=False,
+    write_pdb=False,
+    write_pdb_conect=True,
+    write_cif=False,
+    write_cif_bonds=True,
+    validate_connectivity="warn",
+):
+    """Finalize and export an already prepared bare slit result.
+
+    This internal boundary lets tests and higher-level workflows separate the
+    expensive scientific preparation stage from deterministic serialization.
+    The supplied result is finalized in place and returned.
+
+    Parameters
+    ----------
+    result : SlitPreparationResult
+        Prepared, unfinalized bare-slit result to export.
+    output_dir : str or os.PathLike
+        Directory receiving structure, topology, metadata, and report files.
+    write_object_files : bool, optional
+        Whether to serialize the structural snapshot and full slit state.
+    write_pdb : bool, optional
+        Whether to write PDB coordinates.
+    write_pdb_conect : bool, optional
+        Whether PDB output includes ``CONECT`` records.
+    write_cif : bool, optional
+        Whether to write mmCIF coordinates.
+    write_cif_bonds : bool, optional
+        Whether mmCIF output includes ``_struct_conn`` rows.
+    validate_connectivity : str, optional
+        Connectivity-validation mode forwarded to coordinate writers.
+
+    Returns
+    -------
+    SlitPreparationResult
+        The finalized result with bare-slit charge diagnostics populated.
+    """
+
     result.system.finalize()
     snapshot = _write_slit_structure_outputs(
         result.system,
@@ -3417,51 +3385,113 @@ def write_functionalized_amorphous_slit(
             config,
             progress_tracker=progress_tracker,
         )
-        utils.mkdirp(output_dir)
-        topology_config = resolve_silane_topology_config(config.ligand)
-
-        progress_tracker.set_stage("Finalize")
-        finalize_start = perf_counter()
-        result.system.finalize()
-        finalize_s = perf_counter() - finalize_start
-        progress_tracker.update_stage(1)
-
-        progress_tracker.set_stage("Finalize/export")
-        export_start = perf_counter()
-        snapshot = _write_slit_structure_outputs(
-            result.system,
-            output_dir,
-            write_object_files,
-            write_pdb,
-            write_pdb_conect,
-            write_cif,
-            write_cif_bonds,
-            validate_connectivity,
+        return _write_prepared_functionalized_result(
+            result=result,
+            output_dir=output_dir,
+            config=config,
+            progress_tracker=progress_tracker,
+            write_object_files=write_object_files,
+            write_pdb=write_pdb,
+            write_pdb_conect=write_pdb_conect,
+            write_cif=write_cif,
+            write_cif_bonds=write_cif_bonds,
+            validate_connectivity=validate_connectivity,
         )
-        if topology_config is not None:
-            result.charge_diagnostics = GromacsTopologyWriter(
-                snapshot,
-                output_dir,
-            ).write_full_slit(
-                base_ligand_short=config.ligand.molecule.get_short(),
-                silane_topology_config=topology_config,
-                silica_topology=result.silica_topology,
-            )
-        export_s = perf_counter() - export_start
-        progress_tracker.update_stage(1)
-        result.report = replace(
-            result.report,
-            timing_summary=replace(
-                result.report.timing_summary,
-                finalize_s=finalize_s,
-                export_s=export_s,
-            ),
-        )
-
-        report_path = os.path.join(output_dir, f"{result.report.name}_report.json")
-        with open(report_path, "w") as file_out:
-            json.dump(asdict(result.report), file_out, indent=2)
-
-        return result
     finally:
         progress_tracker.close()
+
+
+def _write_prepared_functionalized_result(
+    result,
+    output_dir,
+    config,
+    progress_tracker,
+    write_object_files=False,
+    write_pdb=False,
+    write_pdb_conect=True,
+    write_cif=False,
+    write_cif_bonds=True,
+    validate_connectivity="warn",
+):
+    """Finalize and export an already prepared functionalized slit result.
+
+    This internal boundary separates expensive surface realization from
+    deterministic finalization and serialization. The supplied result is
+    finalized in place and returned. The caller owns the progress tracker's
+    lifecycle.
+
+    Parameters
+    ----------
+    result : FunctionalizedSlitResult
+        Prepared, unfinalized functionalized-slit result to export.
+    output_dir : str or os.PathLike
+        Directory receiving structure, topology, metadata, and report files.
+    config : FunctionalizedAmorphousSlitConfig
+        Ligand topology and output settings corresponding to ``result``.
+    progress_tracker : _FunctionalizedProgressTracker
+        Active workflow tracker receiving finalization and export stages.
+    write_object_files : bool, optional
+        Whether to serialize the structural snapshot and full slit state.
+    write_pdb : bool, optional
+        Whether to write PDB coordinates.
+    write_pdb_conect : bool, optional
+        Whether PDB output includes ``CONECT`` records.
+    write_cif : bool, optional
+        Whether to write mmCIF coordinates.
+    write_cif_bonds : bool, optional
+        Whether mmCIF output includes ``_struct_conn`` rows.
+    validate_connectivity : str, optional
+        Connectivity-validation mode forwarded to coordinate writers.
+
+    Returns
+    -------
+    FunctionalizedSlitResult
+        Finalized result with timing and charge diagnostics populated.
+    """
+
+    utils.mkdirp(output_dir)
+    topology_config = resolve_silane_topology_config(config.ligand)
+
+    progress_tracker.set_stage("Finalize")
+    finalize_start = perf_counter()
+    result.system.finalize()
+    finalize_s = perf_counter() - finalize_start
+    progress_tracker.update_stage(1)
+
+    progress_tracker.set_stage("Finalize/export")
+    export_start = perf_counter()
+    snapshot = _write_slit_structure_outputs(
+        result.system,
+        output_dir,
+        write_object_files,
+        write_pdb,
+        write_pdb_conect,
+        write_cif,
+        write_cif_bonds,
+        validate_connectivity,
+    )
+    if topology_config is not None:
+        result.charge_diagnostics = GromacsTopologyWriter(
+            snapshot,
+            output_dir,
+        ).write_full_slit(
+            base_ligand_short=config.ligand.molecule.get_short(),
+            silane_topology_config=topology_config,
+            silica_topology=result.silica_topology,
+        )
+    export_s = perf_counter() - export_start
+    progress_tracker.update_stage(1)
+    result.report = replace(
+        result.report,
+        timing_summary=replace(
+            result.report.timing_summary,
+            finalize_s=finalize_s,
+            export_s=export_s,
+        ),
+    )
+
+    report_path = os.path.join(output_dir, f"{result.report.name}_report.json")
+    with open(report_path, "w") as file_out:
+        json.dump(asdict(result.report), file_out, indent=2)
+
+    return result

@@ -7,12 +7,12 @@
 from __future__ import annotations
 
 import copy
-import math
 from dataclasses import dataclass
 from types import MappingProxyType
 
 from .molecule import Molecule
 from .shape import Cuboid, CuboidConfig
+from .slit_geometry import PeriodicSlitGeometry
 
 
 @dataclass(frozen=True)
@@ -230,6 +230,12 @@ class SilicaSlit:
         self.__surface_positions_nm = tuple(
             tuple(self.__surface.atom_position(site_id))
             for site_id in self.__interior_site_ids
+        )
+        self.__geometry = PeriodicSlitGeometry.from_surface_positions(
+            box_lengths_nm=self.__original_box_nm,
+            surface_positions_nm=self.__surface_positions_nm,
+            normal_axis_index=1,
+            interior_reference_position_nm=self.__centroid_nm,
         )
 
     @classmethod
@@ -754,44 +760,26 @@ class SilicaSlit:
         return StructureWriter(snapshot).complete_snapshot()
 
     def metadata(self):
-        """Return YAML-ready geometric metadata for the periodic slit."""
-        radii = [
-            abs(position[1] - self.__centroid_nm[1])
-            for position in self.__surface_positions_nm
-        ]
-        radius_mean = sum(radii) / len(radii) if radii else 0.0
-        effective_width = 2 * radius_mean
-        roughness = (
-            math.sqrt(sum((radius - radius_mean) ** 2 for radius in radii) / len(radii))
-            if radii
-            else 0.0
-        )
-        length = self.__original_box_nm[2]
-        width = self.__original_box_nm[0]
-        volume = width * effective_width * length
-        surface = 2 * (
-            length * width + length * effective_width + width * effective_width
-        )
+        """Return the unit-explicit schema-v1 periodic-slit metadata.
+
+        Returns
+        -------
+        metadata : dict
+            Mapping containing ``schema_version`` and one ``slit_geometry``
+            payload. Surface area is the projected area of the two periodic
+            silica-fluid interfaces.
+        """
+
+        geometry_payload = self.__geometry.to_dict()
+        geometry_payload["requested_slit_width_nm"] = self.__slit_width_nm
+        geometry_payload["centroid_nm"] = list(self.__centroid_nm)
         return {
-            "shape_00": {
-                "diameter": effective_width,
-                "parameter": {
-                    "central": [0, 0, 1],
-                    "centroid": list(self.__centroid_nm),
-                    "height": self.__slit_width_nm,
-                    "length": length,
-                    "width": width,
-                },
-                "roughness": roughness,
-                "shape": "SLIT",
-                "surface": surface,
-                "volume": volume,
-            },
-            "system": {
-                "centroid": list(self.__centroid_nm),
-                "dimensions": list(self.box_nm),
-                "reservoir": 0,
-                "surface": {"in": surface, "ex": 0.0},
-                "volume": volume,
-            },
+            "schema_version": 1,
+            "slit_geometry": geometry_payload,
         }
+
+    @property
+    def geometry(self) -> PeriodicSlitGeometry:
+        """Return the immutable physical geometry of this periodic slit."""
+
+        return self.__geometry

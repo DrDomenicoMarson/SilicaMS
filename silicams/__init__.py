@@ -31,9 +31,14 @@ from .slit_fill import (
     SlitDensityReport,
     SlitFillConfig,
     SlitFillReport,
-    SurfacePlaneRegion,
     estimate_guest_density,
     fill_slit,
+)
+from .slit_geometry import (
+    PeriodicSlitGeometry,
+    minimum_image_displacements,
+    pairwise_minimum_image_distances,
+    wrap_positions,
 )
 from .slit_system import (
     LigandAttachmentResult,
@@ -92,7 +97,10 @@ __all__ = [
     "SurfaceEditRecord",
     "SurfacePreparationDiagnostics",
     "SlitFillConfig",
-    "SurfacePlaneRegion",
+    "PeriodicSlitGeometry",
+    "minimum_image_displacements",
+    "pairwise_minimum_image_distances",
+    "wrap_positions",
     "DensityProbeEstimate",
     "DensityEstimate",
     "SlitFillReport",

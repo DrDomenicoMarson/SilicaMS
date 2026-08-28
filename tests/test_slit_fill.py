@@ -6,8 +6,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 import silicams.slit_fill as slit_fill_mod
+from silicams import PeriodicSlitGeometry
 
 
 def _gro_atom_line(
@@ -189,26 +191,25 @@ def test_center_crop_guest_residues(module_workspace) -> None:
     )
 
 
-def test_infer_surface_plane_region_detects_x_axis(module_workspace) -> None:
+def test_infer_slit_geometry_detects_x_axis(module_workspace) -> None:
     """Hydroxylated surface Si atoms should define the slit-normal axis."""
 
     slit_path = module_workspace.root / "slit_plane.gro"
     _write_basic_slit(slit_path)
     slit_system = slit_fill_mod._load_gro_system(slit_path)
 
-    plane_region = slit_fill_mod._infer_surface_plane_region(
+    slit_geometry = slit_fill_mod._infer_slit_geometry(
         slit_system=slit_system,
         slit_coordinates=slit_system.coordinates,
         box_lengths=slit_system.box_lengths,
-        padding_nm=0.0,
     )
 
-    assert plane_region.axis_index == 0
-    assert plane_region.axis_name == "x"
-    assert plane_region.interval_wraps is False
-    assert plane_region.lower_plane_nm == pytest.approx(0.2)
-    assert plane_region.upper_plane_nm == pytest.approx(1.8)
-    assert plane_region.accessible_width_nm == pytest.approx(1.6)
+    assert slit_geometry.normal_axis_index == 0
+    assert slit_geometry.normal_axis_name == "x"
+    assert slit_geometry.interval_wraps is False
+    assert slit_geometry.lower_plane_nm == pytest.approx(0.2)
+    assert slit_geometry.upper_plane_nm == pytest.approx(1.8)
+    assert slit_geometry.plane_separation_nm == pytest.approx(1.6)
 
 
 def test_identify_clashes_detects_forward_ring_crossing(module_workspace) -> None:
@@ -313,10 +314,18 @@ def test_fill_slit_writes_merged_gro_and_human_report(module_workspace, capsys) 
     assert report.final_residue_count == 3
     assert len(merged_system.residue_spans) == 3
     assert output_path.is_file()
+    metadata_path = output_path.with_suffix(".yml")
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["schema_version"] == 1
+    assert metadata["slit_geometry"]["normal_axis_name"] == "z"
+    assert PeriodicSlitGeometry.from_dict(metadata["slit_geometry"]) == (
+        report.output_slit_geometry
+    )
     assert "Slit Fill Report" in log_text
     assert "Inputs" in log_text
     assert "Selection" in log_text
-    assert "Surface planes" in log_text
+    assert "Input slit geometry" in log_text
+    assert "Output slit geometry" in log_text
     assert "Clash filters" in log_text
     assert "Ring checks" in log_text
     assert "Density" in log_text
@@ -398,7 +407,11 @@ def test_density_analysis_is_reproducible_and_cli_helpers_accept_argv(
     assert report_a.guest_atom_count == 6
     assert report_a.framework_atom_count == 6
     assert probe_a.seed_values == probe_b.seed_values == probe_cli.seed_values
-    assert probe_a.accessible_volumes_nm3 == probe_b.accessible_volumes_nm3 == probe_cli.accessible_volumes_nm3
+    assert (
+        probe_a.probe_free_volumes_nm3
+        == probe_b.probe_free_volumes_nm3
+        == probe_cli.probe_free_volumes_nm3
+    )
     density_log_text = density_log_path.read_text(encoding="utf-8")
 
     captured = capsys.readouterr()
@@ -537,3 +550,100 @@ def test_density_analysis_skips_nominal_box_warning(module_workspace) -> None:
         "fall outside the nominal slit box range" in str(warning.message)
         for warning in caught_warnings
     )
+
+
+def test_density_requires_explicit_geometry_for_nonhydroxylated_framework(
+    module_workspace,
+) -> None:
+    """Neighboring metadata is ignored unless its path is supplied explicitly."""
+
+    merged_path = module_workspace.root / "functionalized_merged.gro"
+    geometry_path = merged_path.with_suffix(".yml")
+    atoms = [
+        (1, "SIL", "SI1", 1, 0.2, 0.5, 0.5),
+        (2, "SIL", "SI1", 2, 1.8, 1.5, 1.5),
+        *_ring_residue(3, "THY", 3, (1.0, 1.0, 1.0)),
+    ]
+    _write_gro(merged_path, atoms, (2.0, 2.0, 2.0), title="functionalized")
+    slit_geometry = PeriodicSlitGeometry(
+        box_lengths_nm=(2.0, 2.0, 2.0),
+        normal_axis_index=0,
+        lower_plane_nm=0.2,
+        upper_plane_nm=1.8,
+    )
+    geometry_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "slit_geometry": slit_geometry.to_dict(),
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Could not identify any hydroxylated"):
+        slit_fill_mod.estimate_guest_density(
+            slit_fill_mod.SlitDensityConfig(
+                input_path=merged_path,
+                density_probe_radii_nm=(0.0,),
+                density_sample_count=100,
+                density_seed_count=1,
+                random_seed=4,
+            )
+        )
+
+    report = slit_fill_mod.estimate_guest_density(
+        slit_fill_mod.SlitDensityConfig(
+            input_path=merged_path,
+            slit_geometry_path=geometry_path,
+            density_probe_radii_nm=(0.0,),
+            density_sample_count=300,
+            density_seed_count=1,
+            random_seed=4,
+        )
+    )
+
+    probe = report.density_estimate.probe_estimates[0]
+    assert report.slit_geometry == slit_geometry
+    assert report.density_estimate.geometric_slit_volume_nm3 == pytest.approx(6.4)
+    assert 0.0 <= probe.probe_free_fractions[0] <= 1.0
+    assert 0.0 <= probe.probe_free_volumes_nm3[0] <= 6.4
+
+
+def test_geometry_input_validation_rejects_conflicts_legacy_schema_and_box_mismatch(
+    module_workspace,
+) -> None:
+    """Geometry inputs should be unambiguous, versioned, and box-consistent."""
+
+    geometry = PeriodicSlitGeometry(
+        box_lengths_nm=(2.0, 2.0, 2.0),
+        normal_axis_index=0,
+        lower_plane_nm=0.2,
+        upper_plane_nm=1.8,
+    )
+    geometry_path = module_workspace.root / "geometry.yml"
+    geometry_path.write_text(
+        yaml.safe_dump({"shape_00": {"system": {"surface": 1.0}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not both"):
+        slit_fill_mod.SlitDensityConfig(
+            slit_geometry=geometry,
+            slit_geometry_path=geometry_path,
+        )
+    with pytest.raises(ValueError, match="schema_version: 1"):
+        slit_fill_mod._load_slit_geometry(geometry_path)
+
+    mismatched_geometry = PeriodicSlitGeometry(
+        box_lengths_nm=(3.0, 2.0, 2.0),
+        normal_axis_index=0,
+        lower_plane_nm=0.2,
+        upper_plane_nm=1.8,
+    )
+    with pytest.raises(ValueError, match="do not match"):
+        slit_fill_mod._validate_geometry_box(
+            mismatched_geometry,
+            np.array([2.0, 2.0, 2.0]),
+        )

@@ -766,68 +766,6 @@ class _SilicaChemistryEngine:
             )
         )
 
-    def _minimum_image_vector(self, pos_a, pos_b):
-        """Return the shortest periodic vector from ``pos_a`` to ``pos_b``.
-
-        Parameters
-        ----------
-        pos_a : list[float]
-            First position vector.
-        pos_b : list[float]
-            Second position vector.
-
-        Returns
-        -------
-        vector : list[float]
-            Minimum-image displacement vector.
-        """
-        box = self._block.get_box()
-        vector = geometry.vector(pos_a, pos_b)
-        for dim, box_length in enumerate(box):
-            if box_length <= 0:
-                continue
-            half_box = box_length / 2
-            while vector[dim] > half_box:
-                vector[dim] -= box_length
-            while vector[dim] < -half_box:
-                vector[dim] += box_length
-        return vector
-
-    def _minimum_image_displacements(self, pos_a, positions_b, box=None):
-        """Return shortest periodic vectors from one point to many targets.
-
-        Parameters
-        ----------
-        pos_a : list[float] or np.ndarray
-            Reference position.
-        positions_b : np.ndarray
-            Target positions with shape ``(n, 3)``.
-        box : list[float] or np.ndarray or None, optional
-            Periodic box lengths. When ``None``, the current block box is used.
-
-        Returns
-        -------
-        vectors : np.ndarray
-            Minimum-image displacement vectors with shape ``(n, 3)``.
-        """
-        positions_b = np.asarray(positions_b, dtype=float).reshape(-1, self._dim)
-        if positions_b.size == 0:
-            return np.empty((0, self._dim), dtype=float)
-
-        vectors = positions_b - np.asarray(pos_a, dtype=float)
-        box = np.asarray(self._block.get_box() if box is None else box, dtype=float)
-        for dim, box_length in enumerate(box):
-            if box_length <= 0:
-                continue
-            half_box = box_length / 2
-            component = vectors[:, dim]
-            original_positive = component > 0
-            component[:] = np.mod(component + half_box, box_length) - half_box
-            boundary_mask = (np.abs(component + half_box) <= 1e-12) & original_positive
-            component[boundary_mask] = half_box
-
-        return vectors
-
     def _steric_radii(self, atom_types):
         """Return covalent radii for atom types participating in sterics.
 
