@@ -23,7 +23,14 @@ Quick start
 
    import silicams as sms
 
-   config = sms.AmorphousSlitConfig(name="bare_silica_slit")
+   config = sms.AmorphousSlitConfig(
+       name="bare_silica_slit",
+       surface_target=sms.ExperimentalSiliconStateTarget(
+           q2_fraction=0.0170,
+           q3_fraction=0.1675,
+           surface_silicon_fraction=0.60,
+       ),
+   )
    result = sms.write_bare_amorphous_slit("output/bare", config)
    print(result.report.final_surface)
 

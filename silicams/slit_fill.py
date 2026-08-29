@@ -79,7 +79,11 @@ class SlitFillConfig:
     target_resname : str, optional
         Residue name used to identify removable guest molecules.
     general_cutoff_nm : float, optional
-        Lower all-atom clash cutoff in nanometers.
+        Lower all-atom clash cutoff in nanometers. The ``0.10 nm`` default is
+        deliberately permissive and intended to produce a starting
+        configuration for staged energy minimization. ``0.15`` and ``0.20
+        nm`` are useful progressively stricter values, but no value is a
+        universal force-field contact criterion.
     ring_atom_prefix : str, optional
         Prefix used to identify the six aromatic ring atoms, for example
         ``"CA"`` for atom names such as ``CA1`` and ``CA6``.
@@ -133,8 +137,10 @@ class SlitFillConfig:
     def __post_init__(self) -> None:
         """Validate configuration values that do not require file inspection."""
 
-        if self.general_cutoff_nm <= 0.0:
-            raise ValueError("The general clash cutoff must be strictly positive.")
+        if not np.isfinite(self.general_cutoff_nm) or self.general_cutoff_nm <= 0.0:
+            raise ValueError(
+                "The general clash cutoff must be finite and strictly positive."
+            )
         if self.ring_plane_tolerance_nm < 0.0:
             raise ValueError("The ring-plane tolerance must be non-negative.")
         if self.ring_polygon_padding_nm < 0.0:
@@ -3106,10 +3112,10 @@ def _build_fill_argument_parser() -> argparse.ArgumentParser:
         default=SlitFillConfig.general_cutoff_nm,
         help=(
             "All-atom clash cutoff in nm. Target residues with any atom closer "
-            "than this distance to any slit atom are removed. The default "
-            "(0.10 nm) is intentionally small because the explicit aromatic "
-            "ring check handles threading separately. For a single-cutoff "
-            "workflow without the ring check, a value around 0.35 nm is typical."
+            "than this distance to any slit atom are removed. The 0.10 nm "
+            "default is deliberately permissive; 0.15 and 0.20 nm are useful "
+            "progressively stricter starting points. Ring-crossing checks are "
+            "applied separately. Every output still requires minimization."
         ),
     )
     parser.add_argument(

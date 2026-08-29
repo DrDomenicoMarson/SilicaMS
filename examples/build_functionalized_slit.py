@@ -37,7 +37,7 @@ def main(
                 q4_fraction=239 / 957,
                 t2_fraction=1 / 957,
                 t3_fraction=1 / 957,
-                alpha_override=1.0,
+                surface_silicon_fraction=1.0,
             ),
         ),
         ligand=sms.SilaneAttachmentConfig(

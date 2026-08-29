@@ -327,7 +327,7 @@ def bare_slit_context(tmp_path_factory: pytest.TempPathFactory) -> BareSlitConte
     surface_target = sms.ExperimentalSiliconStateTarget(
         q2_fraction=0.069,
         q3_fraction=0.681,
-        alpha_override=1.0,
+        surface_silicon_fraction=1.0,
     )
     config = sms.AmorphousSlitConfig(
         name="test_bare_amorphous_slit",
@@ -376,7 +376,7 @@ def functionalized_slit_context() -> FunctionalizedSlitContext:
         q4_fraction=239 / 957,
         t2_fraction=3 / 957,
         t3_fraction=4 / 957,
-        alpha_override=1.0,
+        surface_silicon_fraction=1.0,
     )
     config = sms.FunctionalizedAmorphousSlitConfig(
         slit_config=sms.AmorphousSlitConfig(
@@ -496,7 +496,7 @@ def small_bare_slit_context() -> SmallBareSlitContext:
         surface_target=sms.ExperimentalSiliconStateTarget(
             q2_fraction=0.069,
             q3_fraction=0.681,
-            alpha_override=1.0,
+            surface_silicon_fraction=1.0,
         ),
     )
     prepared_result = sms.prepare_amorphous_slit_surface(config)
@@ -537,7 +537,7 @@ def teps_slit_context(repo_root: Path) -> FunctionalizedSlitContext:
         q4_fraction=239 / 957,
         t2_fraction=1 / 957,
         t3_fraction=1 / 957,
-        alpha_override=1.0,
+        surface_silicon_fraction=1.0,
     )
     config = sms.FunctionalizedAmorphousSlitConfig(
         slit_config=sms.AmorphousSlitConfig(

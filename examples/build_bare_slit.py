@@ -26,7 +26,7 @@ def main(output_dir: str | Path = "output/bare_slit") -> sms.SlitPreparationResu
             q2_fraction=65 / 957,
             q3_fraction=651 / 957,
             q4_fraction=241 / 957,
-            alpha_override=1.0,
+            surface_silicon_fraction=1.0,
         ),
     )
     return sms.write_bare_amorphous_slit(

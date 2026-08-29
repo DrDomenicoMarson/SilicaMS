@@ -5,7 +5,11 @@ Bare slits
 ----------
 
 ``ExperimentalSiliconStateTarget`` stores ``Q2/Q3/Q4/T2/T3`` fractions over
-all silicon atoms. Bare slits require zero ``T2`` and ``T3`` fractions.
+all silicon atoms. It also requires ``surface_silicon_fraction``: the
+physically justified fraction of the experimental silicon population
+represented by the modeled surface. SilicaMS does not infer this value from
+the generated wall geometry. Bare slits require zero ``T2`` and ``T3``
+fractions.
 
 .. code-block:: python
 
@@ -16,8 +20,9 @@ all silicon atoms. Bare slits require zero ``T2`` and ``T3`` fractions.
        slit_width_nm=7.0,
        repeat_y=2,
        surface_target=sms.ExperimentalSiliconStateTarget(
-           q2_fraction=66 / 40000,
-           q3_fraction=650 / 40000,
+           q2_fraction=0.0170,
+           q3_fraction=0.1675,
+           surface_silicon_fraction=0.60,
        ),
    )
    result = sms.write_bare_amorphous_slit("output/bare", config)
@@ -47,12 +52,11 @@ Functionalized slits
            name="functionalized_silica_slit",
            repeat_y=1,
            surface_target=sms.ExperimentalSiliconStateTarget(
-               q2_fraction=65 / 957,
-               q3_fraction=651 / 957,
-               q4_fraction=239 / 957,
-               t2_fraction=1 / 957,
-               t3_fraction=1 / 957,
-               alpha_override=1.0,
+               q2_fraction=0.0133,
+               q3_fraction=0.1735,
+               t2_fraction=0.0195,
+               t3_fraction=0.0367,
+               surface_silicon_fraction=0.571,
            ),
        ),
        ligand=sms.SilaneAttachmentConfig(
@@ -71,6 +75,21 @@ but no functionalized ITP/TOP pair. Full topology export requires a
 self-contained flat ligand ITP. Silica junction terms are configured through
 ``AmorphousSlitConfig.silica_topology``; use
 ``sms.default_silica_topology()`` to obtain an editable copy.
+
+Contact settings and minimization
+---------------------------------
+
+The construction defaults deliberately favor obtaining a usable starting
+configuration over enforcing a force-field contact criterion. For grafting,
+``FunctionalizedSlitStericConfig(clearance_scale=0.60)`` is the permissive
+default. ``0.75`` and ``0.85`` are progressively stricter continuous values
+that remained practical in tests on the bundled TEPS series; dense exact
+targets can become very slow or unrealizable near ``0.90`` and above. The
+chosen settings are included in the preparation report.
+
+These values are system-specific heuristics, not physical presets. Inspect
+the coordinates and perform a gentle unconstrained energy minimization before
+introducing constraints and proceeding to equilibration.
 
 Writers and object output
 -------------------------

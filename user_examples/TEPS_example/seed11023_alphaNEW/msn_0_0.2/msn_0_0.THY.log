@@ -1,0 +1,124 @@
+Slit Fill Report
+================
+
+Inputs
+------
+  Guest reservoir : thymol.gro
+  Slit structure  : seed11023_alphaNEW/msn_0_0/msn_0_0.gro
+  Merged output   : seed11023_alphaNEW/msn_0_0/msn_0_0.THY.gro
+  Report file     : seed11023_alphaNEW/msn_0_0/msn_0_0.THY.log
+
+Selection
+---------
+  Target residue                  : THY
+  General cutoff                  : 0.040 nm
+  Surface-plane filter            : True
+  Surface-plane padding           : -0.030 nm
+  Initial guest molecules         : 3850
+  Cropped guest molecules         : 2849
+  Removed outside crop            : 1001
+  After surface-plane filter      : 1946
+  Removed by surface-plane filter : 903
+
+Surface planes
+--------------
+  Detected axis         : y
+  Axis index            : 1
+  Lower plane           : 1.45400 nm
+  Upper plane           : 8.15300 nm
+  Interval wraps        : False
+  Accessible width      : 6.69900 nm
+  Padding               : -0.03000 nm
+  Surface Si atoms used : 295
+
+Clash filters
+-------------
+  Removed by general cutoff   : 4
+  Removed by any clash        : 5
+  Removed total               : 1909
+  Remaining guest molecules   : 1941
+  General only                : 4
+  General + forward ring only : 0
+  General + reverse ring only : 0
+  General + forward + reverse : 0
+
+Ring checks
+-----------
+  Ring atom prefix            : CA
+  Ring plane tolerance        : 0.040 nm
+  Ring polygon padding        : 0.020 nm
+  Include hydrogen bonds      : True
+  Slit aromatic rings         : 0
+  Guest aromatic rings        : 1946
+  Guest bonds checked         : 25
+  Slit bond templates         : 4
+  Slit bonds checked          : 671
+  Removed by forward ring     : 0
+  Removed by reverse ring     : 1
+  Removed by any ring         : 1
+  Forward ring only           : 0
+  Reverse ring only           : 1
+  Forward + reverse ring only : 0
+
+Density
+-------
+  Guest molecule mass : 150.21700 Da
+  Total guest mass    : 291571.19700 Da
+  Box volume          : 886.11912 nm^3
+  Box-average density : 0.54639 g/cm^3
+  Samples per seed    : 200000
+  Seed count          : 5
+
+Probe details
+-------------
+Probe 0.00 nm
+-------------
+  Probe radius         : 0.000 nm
+  Seed values          : 4563305737479804216 8711412926758937335 6467250772824991758 1052592474384276879 2996693997851232755
+  Accessible fractions : 0.773270 0.772990 0.772035 0.772270 0.772740
+  Accessible volumes   : 685.209332 684.961219 684.114975 684.323213 684.739689 nm^3
+  Accessible densities : 0.706595 0.706851 0.707725 0.707510 0.707079 g/cm^3
+  Mean fraction        : 0.772661
+  Std fraction         : 0.000507
+  Mean volume          : 684.669685 nm^3
+  Std volume           : 0.449683 nm^3
+  Mean density         : 0.707152 g/cm^3
+  Std density          : 0.000464 g/cm^3
+
+Probe 0.14 nm
+-------------
+  Probe radius         : 0.140 nm
+  Seed values          : 1120809307910821434 5417678878592569884 355632262629861066 3168083990802404795 7833666017589800108
+  Accessible fractions : 0.656700 0.656630 0.657170 0.655680 0.658710
+  Accessible volumes   : 581.914426 581.852398 582.330902 581.010585 583.695526 nm^3
+  Accessible densities : 0.832022 0.832110 0.831427 0.833316 0.829483 g/cm^3
+  Mean fraction        : 0.656978
+  Std fraction         : 0.001109
+  Mean volume          : 582.160767 nm^3
+  Std volume           : 0.982742 nm^3
+  Mean density         : 0.831671 g/cm^3
+  Std density          : 0.001403 g/cm^3
+
+Probe 0.20 nm
+-------------
+  Probe radius         : 0.200 nm
+  Seed values          : 2582536079388277635 4257606617658698879 3365319685431628677 4826121539562575151 7264923625717694803
+  Accessible fractions : 0.638030 0.638610 0.639810 0.639300 0.640155
+  Accessible volumes   : 565.370582 565.884531 566.947874 566.495953 567.253585 nm^3
+  Accessible densities : 0.856368 0.855590 0.853986 0.854667 0.853525 g/cm^3
+  Mean fraction        : 0.639181
+  Std fraction         : 0.000867
+  Mean volume          : 566.390505 nm^3
+  Std volume           : 0.768593 nm^3
+  Mean density         : 0.854827 g/cm^3
+  Std density          : 0.001160 g/cm^3
+
+Output
+------
+  Slit atoms          : 18138
+  Final atom count    : 66663
+  Final residue count : 19435
+  Axis order          : x z y
+  Crop window start   : 0.17084 0.17334 0.17413 nm
+  Output box          : 9.60500 9.60500 9.60500 nm
+  Wrapped into box    : True

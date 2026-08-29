@@ -1,0 +1,25 @@
+HETATM    1 HA2  TPS     1       2.194  -1.971   2.197  1.00  0.00           H  
+HETATM    2 CA2  TPS     1       1.587  -1.394   1.506  1.00  0.00           C  
+HETATM    3 CA1  TPS     1       0.613  -0.487   1.963  1.00  0.00           C  
+HETATM    4 Si   TPS     1       0.426  -0.167   3.789  1.00  0.00          Si  
+HETATM    5 CA6  TPS     1      -0.096   0.287   1.021  1.00  0.00           C  
+HETATM    6 HH6  TPS     1      -0.893   0.957   1.324  1.00  0.00           H  
+HETATM    7 CA5  TPS     1       0.220   0.207  -0.345  1.00  0.00           C  
+HETATM    8 HA5  TPS     1      -0.320   0.810  -1.068  1.00  0.00           H  
+HETATM    9 CA4  TPS     1       1.215  -0.676  -0.786  1.00  0.00           C  
+HETATM   10 HA4  TPS     1       1.470  -0.726  -1.840  1.00  0.00           H  
+HETATM   11 CA3  TPS     1       1.879  -1.499   0.136  1.00  0.00           C  
+HETATM   12 HA3  TPS     1       2.647  -2.180  -0.210  1.00  0.00           H  
+CONECT    1    2
+CONECT    2    1    3   11
+CONECT    3    2    4    5
+CONECT    4    3
+CONECT    5    3    6    7
+CONECT    6    5
+CONECT    7    5    8    9
+CONECT    8    7
+CONECT    9    7   10   11
+CONECT   10    9
+CONECT   11    2    9   12
+CONECT   12   11
+END

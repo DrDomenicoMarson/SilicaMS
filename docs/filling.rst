@@ -34,6 +34,16 @@ hydroxylated surface Si atoms. It never discovers a neighboring YAML file
 automatically. Filling writes the geometry after output-axis permutation to
 ``<output_stem>.yml``.
 
+``SlitFillConfig.general_cutoff_nm`` is a continuous, user-selectable
+all-atom cutoff. Its ``0.10 nm`` default is deliberately permissive so dense
+reservoirs can provide useful starting configurations. ``0.15`` and ``0.20
+nm`` are useful progressively stricter values; they remove more guest
+molecules. The historical TEPS workflow uses an especially permissive ``0.04
+nm`` cutoff. These are construction heuristics rather than force-field-valid
+contact distances, and the aromatic-ring crossing checks remain independent
+of the selected cutoff. Inspect and minimize every filled system before
+equilibration.
+
 The signed ``surface_plane_padding_nm`` contracts the mean-plane interval when
 positive and expands it when negative. The resulting width must stay positive
 and no larger than the normal box length. Density sampling is uniform inside

@@ -12,6 +12,14 @@ import silicams.slit_fill as slit_fill_mod
 from silicams import PeriodicSlitGeometry
 
 
+@pytest.mark.parametrize("general_cutoff_nm", (0.0, -0.1, np.nan))
+def test_general_cutoff_must_be_finite_and_positive(general_cutoff_nm: float) -> None:
+    """Reject non-physical all-atom construction cutoffs."""
+
+    with pytest.raises(ValueError, match="finite and strictly positive"):
+        slit_fill_mod.SlitFillConfig(general_cutoff_nm=general_cutoff_nm)
+
+
 def _gro_atom_line(
     residue_id: int,
     residue_name: str,

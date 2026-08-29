@@ -51,8 +51,9 @@ config = sms.AmorphousSlitConfig(
     slit_width_nm=7.0,
     repeat_y=2,
     surface_target=sms.ExperimentalSiliconStateTarget(
-        q2_fraction=66 / 40000,
-        q3_fraction=650 / 40000,
+        q2_fraction=0.0170,
+        q3_fraction=0.1675,
+        surface_silicon_fraction=0.60,
     ),
 )
 
@@ -63,7 +64,12 @@ print(result.bare_charge_diagnostics.is_neutral)
 
 `ExperimentalSiliconStateTarget` always describes fractions over all silicon
 atoms. Omitted `q4_fraction` values are derived from the remaining
-`Q2/Q3/T2/T3` fractions. Builds are deterministic unless `random_seed` is set.
+`Q2/Q3/T2/T3` fractions. The required `surface_silicon_fraction` is the
+physically justified fraction of all sample silicon represented by the
+modeled surface population (the quantity often called alpha). SilicaMS does
+not estimate this mapping from the simulated wall geometry: wall thickness
+and template replication are modeling choices, not measurements of the
+experimental sample. Builds are deterministic unless `random_seed` is set.
 
 ## Functionalized silica slit
 
@@ -76,12 +82,11 @@ config = sms.FunctionalizedAmorphousSlitConfig(
         name="functionalized_silica_slit",
         repeat_y=1,
         surface_target=sms.ExperimentalSiliconStateTarget(
-            q2_fraction=65 / 957,
-            q3_fraction=651 / 957,
-            q4_fraction=239 / 957,
-            t2_fraction=1 / 957,
-            t3_fraction=1 / 957,
-            alpha_override=1.0,
+            q2_fraction=0.0133,
+            q3_fraction=0.1735,
+            t2_fraction=0.0195,
+            t3_fraction=0.0367,
+            surface_silicon_fraction=0.571,
         ),
     ),
     ligand=sms.SilaneAttachmentConfig(
@@ -103,6 +108,29 @@ Pass `SilaneTopologyConfig` with a self-contained flat ligand ITP when a full
 functionalized GROMACS ITP/TOP pair is required. Junction terms are controlled
 through `AmorphousSlitConfig.silica_topology` and
 `sms.default_silica_topology()`.
+
+### Construction contact policy
+
+The contact defaults are deliberately permissive construction heuristics.
+They are intended to make exact slit and loading targets practical and to
+produce starting coordinates for staged molecular-mechanics minimization;
+they do not assert a force-field-valid local minimum.
+
+For ligand grafting, `FunctionalizedSlitStericConfig.clearance_scale=0.60`
+scales sums of covalent radii. Continuous values remain user-selectable. In
+the bundled TEPS series, `0.75` and `0.85` are useful progressively stricter
+values; values of `0.90` or above can make dense exact targets very slow or
+impossible to realize. These observations are system-specific, not universal
+physical thresholds. The selected settings are stored in the preparation
+report.
+
+For filling, `SlitFillConfig.general_cutoff_nm=0.10` is likewise permissive.
+Values of `0.15` and `0.20` nm are useful stricter starting points, with the
+expected tradeoff of removing more guest molecules. The historical TEPS
+workflow uses `0.04` nm and is especially permissive. Ring-crossing checks
+remain active independently of this cutoff. Inspect the generated structure
+and use an unconstrained gentle minimization before constrained relaxation
+and equilibration.
 
 ## Slit filling and density
 
@@ -182,7 +210,10 @@ The `dev` extra installs the declared Setuptools build backend so the explicit
 no-build-isolation wheel check runs against the prepared project environment.
 
 The `examples/` directory contains minimal bare, functionalized, and filling
-workflows.
+workflows. The larger `user_examples/TEPS_example/` directory preserves the
+complete historical TEPS study inputs and generated comparison campaigns from
+`PoreMS/PoreMS@038b034238d0609e0e0f660d5866089e5d3701c8`; its construction and
+filling scripts have been migrated to the current SilicaMS interfaces.
 
 ## Origin and attribution
 

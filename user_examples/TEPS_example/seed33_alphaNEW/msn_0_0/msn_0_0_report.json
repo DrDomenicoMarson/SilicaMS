@@ -1,0 +1,87 @@
+{
+  "name": "msn_0_0",
+  "temperature_k": 300.0,
+  "box_nm": [
+    9.605,
+    9.605,
+    9.605
+  ],
+  "slit_width_nm": 7.0,
+  "wall_thickness_nm": 1.3025000000000002,
+  "site_ex": 0,
+  "siloxane_bridges": 472,
+  "siloxane_distance_range_nm": [
+    0.4,
+    0.65
+  ],
+  "surface_fraction_tolerance": 0.005,
+  "random_seed": 33,
+  "alpha_auto": 0.16261682242990655,
+  "alpha_effective": 0.6,
+  "used_surface_tolerance": true,
+  "experimental_target": {
+    "q2_fraction": 0.017,
+    "q3_fraction": 0.1675,
+    "q4_fraction": 0.8155,
+    "t2_fraction": 0.0,
+    "t3_fraction": 0.0,
+    "alpha_override": 0.6
+  },
+  "derived_surface_target": {
+    "q2_fraction": 0.028333333333333335,
+    "q3_fraction": 0.2791666666666667,
+    "q4_fraction": 0.6925,
+    "t2_fraction": 0.0,
+    "t3_fraction": 0.0
+  },
+  "initial_surface": {
+    "total_surface_si": 957,
+    "q2_sites": 309,
+    "q3_sites": 648,
+    "q4_sites": 0,
+    "t2_sites": 0,
+    "t3_sites": 0
+  },
+  "target_surface": {
+    "total_surface_si": 957,
+    "q2_sites": 27,
+    "q3_sites": 268,
+    "q4_sites": 662,
+    "t2_sites": 0,
+    "t3_sites": 0
+  },
+  "prepared_surface": {
+    "total_surface_si": 957,
+    "q2_sites": 27,
+    "q3_sites": 268,
+    "q4_sites": 662,
+    "t2_sites": 0,
+    "t3_sites": 0
+  },
+  "final_surface": {
+    "total_surface_si": 957,
+    "q2_sites": 27,
+    "q3_sites": 268,
+    "q4_sites": 662,
+    "t2_sites": 0,
+    "t3_sites": 0
+  },
+  "preparation_diagnostics": {
+    "stripped_undercoordinated_si": 14040,
+    "stripped_excess_surface_oxygen_si": 75,
+    "removed_orphan_oxygen": 27597,
+    "removed_invalid_oxygen": 0,
+    "removed_orphan_silicon": 0,
+    "inserted_bridge_oxygen": 472,
+    "final_surface_oxygen_handles": 322,
+    "final_framework_oxygen": 11609
+  },
+  "timing_summary": {
+    "base_slit_build_s": 0.0,
+    "q_state_preparation_s": 0.0,
+    "t2_attachment_s": 0.0,
+    "t3_attachment_s": 0.0,
+    "finalize_s": 0.0,
+    "store_export_s": 0.0
+  }
+}

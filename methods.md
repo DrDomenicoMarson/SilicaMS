@@ -21,11 +21,17 @@ surface atoms, identifies exposed silicon sites, assigns flat-wall normals,
 and validates the remaining scaffold.
 
 The requested `Q2/Q3/Q4/T2/T3` fractions are interpreted over all active
-silicon atoms. The builder derives the corresponding surface-only target using
-the automatically measured surface-to-total silicon fraction (`alpha`) unless
-`alpha_override` is supplied. Exact integer compositions are preferred;
-optional tolerance fallback selects the nearest realizable composition within
-the configured per-state fraction tolerance.
+silicon atoms in the corresponding experimental population. The user must
+provide the physically justified fraction of those silicon atoms represented
+by the modeled surface population (`surface_silicon_fraction`, often denoted
+`alpha`). The builder
+uses that mapping to derive the surface-only target. It never estimates alpha
+from the fraction of surface atoms in the generated wall because template
+replication and wall thickness are model-construction choices rather than
+experimental population measurements. The physical surface fraction must be
+at least the total experimental non-`Q4` fraction. Exact integer compositions
+are preferred; optional tolerance fallback selects the nearest realizable
+composition within the configured per-state fraction tolerance.
 
 Siloxane bridge candidates are chosen from eligible surface-silicon pairs.
 Candidate-pair distances, bridge vectors, adjacency, and steric clearances use
@@ -52,7 +58,15 @@ attached through configured mount and axis atoms, using the slit surface normal
 and optional rotation about the molecular axis. Each batch records requested,
 successful, and rejected site identifiers. The final report stores the
 realized silicon-state composition, surface-edit diagnostics, attachment
-records, and stage timings.
+records, contact settings, and stage timings.
+
+The graft-placement screen uses sums of covalent radii multiplied by the
+continuous `clearance_scale` parameter. Its default value of `0.60` is a
+deliberately permissive construction heuristic chosen to make exact dense
+targets practical. Increasing the scale rejects more crowded placements but
+can make an exact target slow or unrealizable. It should not be interpreted as
+a force-field nonbonded criterion, and every generated functionalized slit
+requires staged energy minimization before equilibration.
 
 Coordinate-only functionalized output does not require a ligand topology. A
 self-contained functionalized GROMACS topology additionally requires an
@@ -81,6 +95,12 @@ requires every guest atom to lie inside a signed-padded mean-plane slit
 interval. Positive padding contracts both faces; negative padding expands the
 interval, but the validated padded width must remain positive and cannot
 exceed the periodic box length along the slit normal.
+
+The general all-atom cutoff is also a construction heuristic. Its `0.10 nm`
+default is deliberately permissive; larger user-selected values remove more
+guests before minimization, while the aromatic-ring crossing checks operate
+independently. This geometric prefilter does not replace force-field energy
+minimization or establish that the retained configuration is equilibrated.
 
 Geometry is resolved from an explicit `PeriodicSlitGeometry`, an explicitly
 named schema-v1 YAML file, or hydroxylated-surface-Si inference. No neighboring

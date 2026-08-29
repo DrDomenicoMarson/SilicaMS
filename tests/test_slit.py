@@ -21,31 +21,31 @@ import silicams.topology as topo_mod
 from silicams._version import __version__ as EXPECTED_VERSION
 
 
-def experimental_target_from_surface(surface_target, alpha, alpha_override=None):
+def experimental_target_from_surface(surface_target, surface_silicon_fraction):
     """Build an experimental all-silicon target from surface-only fractions.
 
     Parameters
     ----------
     surface_target : SiliconStateFractions
         Desired surface-only silicon-state fractions.
-    alpha : float
-        Surface-to-total silicon fraction used for the back-conversion.
-    alpha_override : float or None, optional
-        Explicit alpha override stored on the resulting experimental target.
+    surface_silicon_fraction : float
+        Physical surface-to-total silicon fraction used for the
+        back-conversion and stored on the experimental target.
 
     Returns
     -------
     target : ExperimentalSiliconStateTarget
         Experimental all-silicon target that maps back to ``surface_target``
-        when the same alpha value is applied.
+        when the same physical surface-silicon fraction is applied.
     """
+    alpha = surface_silicon_fraction
     return sms.ExperimentalSiliconStateTarget(
         q2_fraction=alpha * surface_target.q2_fraction,
         q3_fraction=alpha * surface_target.q3_fraction,
         q4_fraction=alpha * surface_target.q4_fraction + (1.0 - alpha),
         t2_fraction=alpha * surface_target.t2_fraction,
         t3_fraction=alpha * surface_target.t3_fraction,
-        alpha_override=alpha_override,
+        surface_silicon_fraction=surface_silicon_fraction,
     )
 
 
@@ -696,10 +696,6 @@ class TestAmorphousSlitPreparation:
         assert diagnostics.coordination_identity_left == diagnostics.coordination_identity_right
 
     def test_prepared_surface_composition_matches_target(self):
-        expected_alpha_auto = (
-            self.prepared_report.prepared_surface.total_surface_si
-            / slit_mod._active_silicon_count(self.prepared_result.system)
-        )
         assert self.prepared_report.final_surface == self.prepared_report.target_surface
         assert self.prepared_report.prepared_surface == self.prepared_report.target_surface
         assert self.prepared_report.prepared_surface.total_surface_si == 954
@@ -710,8 +706,8 @@ class TestAmorphousSlitPreparation:
         assert self.prepared_report.prepared_surface.t3_sites == 0
         assert not (self.prepared_report.used_surface_tolerance)
         assert self.prepared_report.surface_fraction_tolerance == pytest.approx(0.005, abs=1e-7)
-        assert self.prepared_report.alpha_auto == pytest.approx(expected_alpha_auto, abs=10 ** (-(8)))
-        assert self.prepared_report.alpha_effective == 1.0
+        assert self.prepared_report.experimental_target.surface_silicon_fraction == 1.0
+        assert self.prepared_report.functionalization_steric_settings is None
         assert self.prepared_report.derived_surface_target == sms.SiliconStateFractions(0.069, 0.681, 0.25)
         assert self.prepared_report.final_surface.q2_fraction == pytest.approx(self.prepared_report.derived_surface_target.q2_fraction, abs=1e-3)
         assert self.prepared_report.final_surface.q3_fraction == pytest.approx(self.prepared_report.derived_surface_target.q3_fraction, abs=1e-3)
@@ -904,62 +900,53 @@ class TestAmorphousSlitBehavior:
         assert result.report.prepared_surface.q3_sites == 652
         assert result.report.prepared_surface.q4_sites == 239
 
-    def test_auto_alpha_q_only_target_uses_unified_conversion(
-        self,
-        small_bare_slit_context,
-    ):
-        base_result = small_bare_slit_context.prepared_result
-        alpha_auto = base_result.report.alpha_auto
+    def test_physical_surface_fraction_uses_unified_conversion(self):
         reference_surface = sms.SiliconStateFractions(0.069, 0.681, 0.25)
         experimental_target = experimental_target_from_surface(
             reference_surface,
-            alpha_auto,
-            alpha_override=None,
+            0.2,
         )
+        converted = slit_mod._surface_target_from_experimental(experimental_target)
 
-        result = sms.prepare_amorphous_slit_surface(
-            config=sms.AmorphousSlitConfig(
-                name="auto_alpha_case",
-                repeat_y=1,
-                surface_target=experimental_target,
-            )
-        )
-
-        assert result.report.alpha_effective == pytest.approx(alpha_auto, abs=10 ** (-(8)))
-        assert result.report.derived_surface_target.q2_fraction == pytest.approx(reference_surface.q2_fraction, abs=10 ** (-(12)))
-        assert result.report.derived_surface_target.q3_fraction == pytest.approx(reference_surface.q3_fraction, abs=10 ** (-(12)))
-        assert result.report.derived_surface_target.q4_fraction == pytest.approx(reference_surface.q4_fraction, abs=10 ** (-(12)))
-        assert result.report.final_surface.q2_sites == 66
-        assert result.report.final_surface.q3_sites == 652
-        assert result.report.final_surface.q4_sites == 239
+        assert converted.q2_fraction == pytest.approx(reference_surface.q2_fraction)
+        assert converted.q3_fraction == pytest.approx(reference_surface.q3_fraction)
+        assert converted.q4_fraction == pytest.approx(reference_surface.q4_fraction)
 
     def test_surface_conversion_example_matches_expected_q2_enrichment(self):
         target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=0.5,
             q3_fraction=0.0,
-            alpha_override=0.5,
+            surface_silicon_fraction=0.5,
         )
-        surface_target = slit_mod._surface_target_from_experimental(target, 0.5)
+        surface_target = slit_mod._surface_target_from_experimental(target)
 
         assert surface_target == sms.SiliconStateFractions(1.0, 0.0, 0.0)
 
-    def test_alpha_override_precedence(self):
-        target = sms.ExperimentalSiliconStateTarget(
-            q2_fraction=0.02,
-            q3_fraction=0.03,
-            alpha_override=0.2,
-        )
-        alpha_auto, alpha_effective = slit_mod._effective_alpha(100, 1000, target)
+    def test_surface_silicon_fraction_is_mandatory(self):
+        with pytest.raises(TypeError, match="surface_silicon_fraction"):
+            sms.ExperimentalSiliconStateTarget(
+                q2_fraction=0.02,
+                q3_fraction=0.03,
+            )
 
-        assert alpha_auto == pytest.approx(0.1, abs=1e-7)
-        assert alpha_effective == pytest.approx(0.2, abs=1e-7)
+    @pytest.mark.parametrize("surface_silicon_fraction", (0.0, -0.1, 1.1, np.nan))
+    def test_surface_silicon_fraction_must_be_finite_and_physical(
+        self,
+        surface_silicon_fraction,
+    ):
+        with pytest.raises(ValueError, match="surface-silicon fraction"):
+            sms.ExperimentalSiliconStateTarget(
+                q2_fraction=0.02,
+                q3_fraction=0.03,
+                surface_silicon_fraction=surface_silicon_fraction,
+            )
 
     def test_random_seed_reproducibly_changes_bare_surface_realization(self):
         target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=307 / 957,
             q3_fraction=650 / 957,
             q4_fraction=0.0,
-            alpha_override=1.0,
+            surface_silicon_fraction=1.0,
         )
 
         def bridge_pairs(seed):
@@ -996,6 +983,7 @@ class TestAmorphousSlitBehavior:
         target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=0.02,
             q3_fraction=0.03,
+            surface_silicon_fraction=0.5,
             t2_fraction=0.04,
             t3_fraction=0.01,
         )
@@ -1008,6 +996,7 @@ class TestAmorphousSlitBehavior:
             sms.ExperimentalSiliconStateTarget(
                 q2_fraction=0.02,
                 q3_fraction=0.03,
+                surface_silicon_fraction=1.0,
                 q4_fraction=0.89,
                 t2_fraction=0.04,
                 t3_fraction=0.01,
@@ -1016,15 +1005,16 @@ class TestAmorphousSlitBehavior:
     def test_invalid_alpha_target_combinations_raise(self):
         with pytest.raises(
             ValueError,
-            match=r"Minimum required alpha is 0\.500000, observed 0\.400000",
+            match=(
+                r"Minimum required fraction is 0\.500000, observed 0\.400000"
+            ),
         ):
             slit_mod._surface_target_from_experimental(
                 sms.ExperimentalSiliconStateTarget(
                     q2_fraction=0.5,
                     q3_fraction=0.0,
-                    alpha_override=0.4,
+                    surface_silicon_fraction=0.4,
                 ),
-                0.4,
             )
 
     def test_bridge_algebra_matches_q_state_changes(self, small_bare_slit_context):
@@ -1212,6 +1202,7 @@ class TestAmorphousSlitBehavior:
                     surface_target=sms.ExperimentalSiliconStateTarget(
                         q2_fraction=0.05,
                         q3_fraction=0.05,
+                        surface_silicon_fraction=1.0,
                         q4_fraction=0.85,
                         t2_fraction=0.05,
                     )
@@ -1284,8 +1275,8 @@ class TestStoredAmorphousSlit:
         assert data["surface_fraction_tolerance"] == 0.005
         assert data["random_seed"] is None
         assert not (data["used_surface_tolerance"])
-        assert data["alpha_auto"] == pytest.approx(self.stored_report.alpha_auto, abs=10 ** (-(8)))
-        assert data["alpha_effective"] == 1.0
+        assert data["experimental_target"]["surface_silicon_fraction"] == 1.0
+        assert data["functionalization_steric_settings"] is None
         assert data["final_surface"]["q2_sites"] == self.stored_report.final_surface.q2_sites
         assert data["final_surface"]["q3_sites"] == self.stored_report.final_surface.q3_sites
         assert data["final_surface"]["q4_sites"] == self.stored_report.final_surface.q4_sites
@@ -1600,6 +1591,7 @@ class TestStoredSlitFormats:
         silica_topology.bond_terms.framework_si_o.force_constant = 123456.0
         resolved_topology = slit_mod.resolve_silica_topology(
             sms.AmorphousSlitConfig(
+                surface_target=small_bare_slit_context.config.surface_target,
                 silica_topology=silica_topology,
             )
         )
@@ -1715,6 +1707,14 @@ class TestFunctionalizedAmorphousSlit:
         assert sterics.enabled
         assert sterics.clearance_scale == pytest.approx(0.60)
 
+    @pytest.mark.parametrize("clearance_scale", (0.0, -0.1, np.nan))
+    def test_functionalized_steric_scale_must_be_finite_and_positive(
+        self,
+        clearance_scale,
+    ):
+        with pytest.raises(ValueError, match="finite and greater than zero"):
+            sms.FunctionalizedSlitStericConfig(clearance_scale=clearance_scale)
+
     def test_functionalized_progress_config_defaults_to_auto_quiet_leave_false(self):
         progress = sms.FunctionalizedSlitProgressConfig()
 
@@ -1724,7 +1724,13 @@ class TestFunctionalizedAmorphousSlit:
     def test_functionalized_config_rejects_tuple_ligand_payload(self):
         with pytest.raises(TypeError, match="SilaneAttachmentConfig"):
             sms.FunctionalizedAmorphousSlitConfig(
-                slit_config=sms.AmorphousSlitConfig(),
+                slit_config=sms.AmorphousSlitConfig(
+                    surface_target=sms.ExperimentalSiliconStateTarget(
+                        q2_fraction=0.05,
+                        q3_fraction=0.05,
+                        surface_silicon_fraction=1.0,
+                    )
+                ),
                 ligand=(
                     sms.SilaneAttachmentConfig(
                         molecule=generic.tms(),
@@ -1876,7 +1882,7 @@ class TestFunctionalizedAmorphousSlit:
             q4_fraction=0.0,
             t2_fraction=1 / 957,
             t3_fraction=0.0,
-            alpha_override=1.0,
+            surface_silicon_fraction=1.0,
         )
 
         def attachment_sites(seed):
@@ -2067,6 +2073,9 @@ class TestFunctionalizedAmorphousSlit:
         assert result.report.timing_summary.q_state_preparation_s > 0
         assert result.report.timing_summary.t2_attachment_s > 0
         assert result.report.timing_summary.t3_attachment_s > 0
+        assert result.report.functionalization_steric_settings == (
+            functionalized_slit_context.config.steric_settings
+        )
         assert result.system.attached_state_counts("TMS") == (3, 4)
         assert "SLX" not in result.system.molecule_counts
 
@@ -2077,7 +2086,7 @@ class TestFunctionalizedAmorphousSlit:
             q4_fraction=238 / 957,
             t2_fraction=3 / 957,
             t3_fraction=4 / 957,
-            alpha_override=1.0,
+            surface_silicon_fraction=1.0,
         )
         config = sms.FunctionalizedAmorphousSlitConfig(
             slit_config=sms.AmorphousSlitConfig(

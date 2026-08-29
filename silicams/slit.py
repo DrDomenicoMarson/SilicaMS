@@ -396,6 +396,8 @@ class SiliconStateFractions:
             self.t2_fraction,
             self.t3_fraction,
         )
+        if not all(math.isfinite(fraction) for fraction in fractions):
+            raise ValueError("Silicon-state fractions must be finite.")
         if min(fractions) < 0:
             raise ValueError("Silicon-state fractions must be non-negative.")
         if abs(sum(fractions) - 1.0) > 1e-6:
@@ -422,18 +424,19 @@ class ExperimentalSiliconStateTarget:
         Experimental ``T2`` fraction over all Si atoms in the sample.
     t3_fraction : float, optional
         Experimental ``T3`` fraction over all Si atoms in the sample.
-    alpha_override : float or None, optional
-        Optional explicit surface-to-total silicon fraction used when mapping
-        the experimental all-silicon ratios to the modeled slit surface. When
-        ``None``, the builder derives ``alpha`` from the slit geometry.
+    surface_silicon_fraction : float
+        Physically justified fraction of all silicon atoms represented by the
+        modeled surface population. This is the experimental-to-model mapping
+        factor commonly denoted ``alpha``. SilicaMS does not estimate it from
+        the simulated wall geometry.
     """
 
     q2_fraction: float
     q3_fraction: float
+    surface_silicon_fraction: float
     q4_fraction: float | None = None
     t2_fraction: float = 0.0
     t3_fraction: float = 0.0
-    alpha_override: float | None = None
 
     def __post_init__(self):
         """Validate the experimental target.
@@ -442,9 +445,22 @@ class ExperimentalSiliconStateTarget:
         ------
         ValueError
             Raised when the fractions are invalid, when an explicit
-            ``q4_fraction`` does not match the derived remainder, or when an
-            explicit ``alpha`` override lies outside ``(0, 1]``.
+            ``q4_fraction`` does not match the derived remainder, or when the
+            physical surface-silicon fraction lies outside ``(0, 1]``.
         """
+        input_fractions = (
+            self.q2_fraction,
+            self.q3_fraction,
+            self.t2_fraction,
+            self.t3_fraction,
+        )
+        if not all(math.isfinite(fraction) for fraction in input_fractions):
+            raise ValueError("Experimental silicon-state fractions must be finite.")
+        if self.q4_fraction is not None and not math.isfinite(self.q4_fraction):
+            raise ValueError("The q4 fraction must be finite when supplied.")
+        if not math.isfinite(self.surface_silicon_fraction):
+            raise ValueError("The surface-silicon fraction must be finite.")
+
         derived_q4 = 1.0 - (
             self.q2_fraction +
             self.q3_fraction +
@@ -466,8 +482,10 @@ class ExperimentalSiliconStateTarget:
             self.t2_fraction,
             self.t3_fraction,
         )
-        if self.alpha_override is not None and not (0.0 < self.alpha_override <= 1.0):
-            raise ValueError("The alpha override must be in the interval (0, 1].")
+        if not (0.0 < self.surface_silicon_fraction <= 1.0):
+            raise ValueError(
+                "The surface-silicon fraction must be in the interval (0, 1]."
+            )
 
 
 @dataclass(frozen=True)
@@ -476,6 +494,10 @@ class AmorphousSlitConfig:
 
     Parameters
     ----------
+    surface_target : ExperimentalSiliconStateTarget
+        Experimental silicon-state ratios over all Si atoms together with the
+        mandatory physical surface-silicon fraction used to derive the modeled
+        surface target.
     name : str, optional
         Base name used for stored slit files.
     slit_width_nm : float, optional
@@ -485,12 +507,6 @@ class AmorphousSlitConfig:
         direction.
     temperature_k : float, optional
         Target simulation temperature in Kelvin.
-    surface_target : ExperimentalSiliconStateTarget, optional
-        Experimental silicon-state ratios used to derive the modeled slit
-        surface target. These fractions are always interpreted over all Si
-        atoms in the sample, not only over surface sites. The default target
-        is expressed over all Si atoms for the default slit geometry and
-        therefore relies on the automatically derived ``alpha`` value.
     amorph_bond_range_nm : tuple, optional
         Accepted ``Si-O`` bond-length range for the amorphous template.
     siloxane_distance_range_nm : tuple, optional
@@ -514,16 +530,11 @@ class AmorphousSlitConfig:
         defaults and create one editable copy for local overrides.
     """
 
+    surface_target: ExperimentalSiliconStateTarget
     name: str = "bare_amorphous_silica_slit"
     slit_width_nm: float = 7.0
     repeat_y: int = 2
     temperature_k: float = 300.0
-    surface_target: ExperimentalSiliconStateTarget = field(
-        default_factory=lambda: ExperimentalSiliconStateTarget(
-            q2_fraction=66 / 40000,
-            q3_fraction=650 / 40000,
-        )
-    )
     amorph_bond_range_nm: tuple[float, float] = (0.160 - 0.02, 0.160 + 0.02)
     siloxane_distance_range_nm: tuple[float, float] = (0.40, 0.65)
     surface_fraction_tolerance: float = 0.005
@@ -539,7 +550,14 @@ class AmorphousSlitConfig:
         ValueError
             Raised when the slit width, y repetition count, or temperature is
             invalid.
+        TypeError
+            Raised when ``surface_target`` is not an
+            :class:`ExperimentalSiliconStateTarget`.
         """
+        if not isinstance(self.surface_target, ExperimentalSiliconStateTarget):
+            raise TypeError(
+                "surface_target must be an ExperimentalSiliconStateTarget instance."
+            )
         if self.slit_width_nm <= 0:
             raise ValueError("The slit width must be positive.")
         if self.repeat_y < 1:
@@ -661,11 +679,6 @@ class SlitPreparationReport:
     random_seed : int or None
         Seed used to randomize surface-editing and grafting choices, or
         ``None`` when the deterministic ordering was used.
-    alpha_auto : float
-        Alpha value derived from the slit geometry.
-    alpha_effective : float
-        Alpha value actually used when converting experimental fractions to the
-        modeled surface target.
     used_surface_tolerance : bool
         Whether the selected target was accepted through the tolerance fallback
         rather than matched exactly.
@@ -673,7 +686,7 @@ class SlitPreparationReport:
         Experimental all-silicon target supplied by the caller.
     derived_surface_target : SiliconStateFractions
         Surface-only fractions derived from the experimental target and
-        ``alpha``.
+        its required physical surface-silicon fraction.
     initial_surface : SiliconStateComposition
         Surface composition before custom condensation.
     target_surface : SiliconStateComposition
@@ -687,6 +700,9 @@ class SlitPreparationReport:
     preparation_diagnostics : SurfacePreparationDiagnostics
         Surface-cleanup and bridge-insertion diagnostics collected across
         preparation, Q-state editing, and optional grafting.
+    functionalization_steric_settings : FunctionalizedSlitStericConfig or None, optional
+        Permissive graft-placement contact settings used for a functionalized
+        build. Bare-slit reports store ``None``.
     timing_summary : SlitTimingSummary, optional
         Lightweight wall-clock timing summary for the major slit-preparation
         stages. Bare-slit builds leave all values at zero unless later export
@@ -702,8 +718,6 @@ class SlitPreparationReport:
     siloxane_distance_range_nm: tuple[float, float]
     surface_fraction_tolerance: float
     random_seed: int | None
-    alpha_auto: float
-    alpha_effective: float
     used_surface_tolerance: bool
     experimental_target: ExperimentalSiliconStateTarget
     derived_surface_target: SiliconStateFractions
@@ -712,6 +726,7 @@ class SlitPreparationReport:
     prepared_surface: SiliconStateComposition
     final_surface: SiliconStateComposition
     preparation_diagnostics: SurfacePreparationDiagnostics
+    functionalization_steric_settings: "FunctionalizedSlitStericConfig | None" = None
     timing_summary: "SlitTimingSummary" = field(default_factory=lambda: SlitTimingSummary())
 
 
@@ -931,7 +946,11 @@ class FunctionalizedSlitStericConfig:
     clearance_scale : float, optional
         Multiplicative factor applied to the sum of covalent radii when
         estimating the minimum allowed atom-pair separation for the slit-only
-        steric screen.
+        steric screen. The default ``0.60`` is deliberately permissive and is
+        intended to produce a starting structure for staged energy
+        minimization. Larger values reject more crowded poses but can make an
+        exact surface target slow or impossible to realize. TEPS testing found
+        ``0.75`` and ``0.85`` useful progressively stricter alternatives.
     """
 
     enabled: bool = True
@@ -943,10 +962,14 @@ class FunctionalizedSlitStericConfig:
         Raises
         ------
         ValueError
-            Raised when the steric clearance scale is not strictly positive.
+            Raised when the steric clearance scale is not finite and strictly
+            positive.
         """
-        if self.clearance_scale <= 0:
-            raise ValueError("The slit steric clearance scale must be greater than zero.")
+        if not math.isfinite(self.clearance_scale) or self.clearance_scale <= 0:
+            raise ValueError(
+                "The slit steric clearance scale must be finite and greater "
+                "than zero."
+            )
 
 
 @dataclass(frozen=True)
@@ -1127,15 +1150,12 @@ class _BaseSlitBuild:
         Prepared slit system before custom siloxane formation.
     total_surface_si : int
         Number of tracked surface silicon sites.
-    total_active_si : int
-        Number of active silicon atoms in the current slit model.
     initial_surface : SiliconStateComposition
         Initial surface composition before custom siloxane formation.
     """
 
     system: SilicaSlit
     total_surface_si: int
-    total_active_si: int
     initial_surface: SiliconStateComposition
 
 
@@ -1240,22 +1260,6 @@ def _duplicate_template_splits(matrix, atoms_per_copy, repeat_y, split_pairs):
         offset = copy_id * atoms_per_copy
         for atom_a, atom_b in split_pairs:
             matrix.split(atom_a + offset, atom_b + offset)
-
-
-def _active_silicon_count(system):
-    """Count active silicon atoms in the current slit model.
-
-    Parameters
-    ----------
-    system : SilicaSlit
-        Slit system whose active connectivity matrix should be inspected.
-
-    Returns
-    -------
-    count : int
-        Number of silicon atoms still present in the active slit model.
-    """
-    return system.active_silicon_count()
 
 
 def _attached_state_counts(system, ligand):
@@ -1401,49 +1405,13 @@ def _ordered_candidates(candidates, rng):
     return [ordered[int(index)] for index in rng.permutation(len(ordered))]
 
 
-def _effective_alpha(total_surface_si, total_active_si, target):
-    """Resolve the automatic and effective alpha values.
-
-    Parameters
-    ----------
-    total_surface_si : int
-        Number of tracked surface silicon sites in the slit.
-    total_active_si : int
-        Number of active silicon atoms in the current slit model.
-    target : ExperimentalSiliconStateTarget
-        Experimental all-silicon target supplied by the caller.
-
-    Returns
-    -------
-    alpha_values : tuple[float, float]
-        Auto-derived alpha and the effective alpha used for conversion.
-
-    Raises
-    ------
-    ValueError
-        Raised when the slit does not contain any active silicon atoms or when
-        the effective alpha falls outside ``(0, 1]``.
-    """
-    if total_active_si <= 0:
-        raise ValueError("Cannot derive alpha from a slit without active silicon atoms.")
-
-    alpha_auto = total_surface_si / total_active_si
-    alpha_effective = target.alpha_override if target.alpha_override is not None else alpha_auto
-    if not (0.0 < alpha_effective <= 1.0):
-        raise ValueError("The effective alpha must be in the interval (0, 1].")
-
-    return alpha_auto, alpha_effective
-
-
-def _surface_target_from_experimental(target, alpha):
+def _surface_target_from_experimental(target):
     """Convert experimental all-silicon ratios into surface-only fractions.
 
     Parameters
     ----------
     target : ExperimentalSiliconStateTarget
         Experimental all-silicon ratios supplied by the caller.
-    alpha : float
-        Effective surface-to-total silicon ratio used for the conversion.
 
     Returns
     -------
@@ -1453,30 +1421,35 @@ def _surface_target_from_experimental(target, alpha):
     Raises
     ------
     ValueError
-        Raised when the experimental ratios and alpha are incompatible with a
-        surface-only interpretation. In particular, the effective ``alpha``
-        must be at least the experimental non-``Q4`` fraction so the
+        Raised when the experimental ratios and physical surface-silicon
+        fraction are incompatible with a surface-only interpretation. In
+        particular, the physical fraction must be at least the experimental
+        non-``Q4`` fraction so the
         converted surface-only ``Q4`` fraction remains non-negative.
     """
+    surface_silicon_fraction = target.surface_silicon_fraction
     non_q4_fraction = (
         target.q2_fraction
         + target.q3_fraction
         + target.t2_fraction
         + target.t3_fraction
     )
-    if alpha + 1e-9 < non_q4_fraction:
+    if surface_silicon_fraction + 1e-9 < non_q4_fraction:
         raise ValueError(
-            "The effective alpha is too small for the requested experimental "
-            "non-Q4 silicon-state fractions. Minimum required alpha is "
-            f"{non_q4_fraction:.6f}, observed {alpha:.6f}."
+            "The physical surface-silicon fraction is too small for the "
+            "requested experimental non-Q4 silicon-state fractions. Minimum "
+            f"required fraction is {non_q4_fraction:.6f}, observed "
+            f"{surface_silicon_fraction:.6f}."
         )
 
     surface_target = SiliconStateFractions(
-        q2_fraction=target.q2_fraction / alpha,
-        q3_fraction=target.q3_fraction / alpha,
-        q4_fraction=(target.q4_fraction - (1.0 - alpha)) / alpha,
-        t2_fraction=target.t2_fraction / alpha,
-        t3_fraction=target.t3_fraction / alpha,
+        q2_fraction=target.q2_fraction / surface_silicon_fraction,
+        q3_fraction=target.q3_fraction / surface_silicon_fraction,
+        q4_fraction=(
+            target.q4_fraction - (1.0 - surface_silicon_fraction)
+        ) / surface_silicon_fraction,
+        t2_fraction=target.t2_fraction / surface_silicon_fraction,
+        t3_fraction=target.t3_fraction / surface_silicon_fraction,
     )
 
     return surface_target
@@ -2682,25 +2655,22 @@ def _build_base_slit_system(config):
     )
 
     total_surface_si = len(system.interior_site_ids)
-    total_active_si = _active_silicon_count(system)
     initial_surface = _surface_composition(total_surface_si, system.binding_sites)
     _refresh_single_slit_tracking(system, total_surface_si, initial_surface)
 
     return _BaseSlitBuild(
         system=system,
         total_surface_si=total_surface_si,
-        total_active_si=total_active_si,
         initial_surface=initial_surface,
     )
 
 
 def _build_report(
     config,
-    alpha_auto,
-    alpha_effective,
     derived_surface_target,
     target_attempt,
     initial_surface,
+    steric_settings=None,
     timing_summary=None,
 ):
     """Create a slit preparation report for a bare or functionalized build.
@@ -2709,16 +2679,15 @@ def _build_report(
     ----------
     config : AmorphousSlitConfig
         Base slit configuration.
-    alpha_auto : float
-        Alpha derived from the current slit geometry.
-    alpha_effective : float
-        Alpha value actually used for target conversion.
     derived_surface_target : SiliconStateFractions
         Surface-only fractions derived from the experimental target.
     target_attempt : _SurfaceTargetAttempt
         Successful target realization payload.
     initial_surface : SiliconStateComposition
         Surface composition before custom condensation.
+    steric_settings : FunctionalizedSlitStericConfig or None, optional
+        Permissive contact settings used during ligand placement. Bare-slit
+        builds leave this as ``None``.
     timing_summary : SlitTimingSummary or None, optional
         Timing summary to store in the report. When omitted, the timings
         collected inside ``target_attempt`` are used.
@@ -2746,8 +2715,6 @@ def _build_report(
         siloxane_distance_range_nm=tuple(config.siloxane_distance_range_nm),
         surface_fraction_tolerance=config.surface_fraction_tolerance,
         random_seed=config.random_seed,
-        alpha_auto=alpha_auto,
-        alpha_effective=alpha_effective,
         used_surface_tolerance=target_attempt.used_surface_tolerance,
         experimental_target=config.surface_target,
         derived_surface_target=derived_surface_target,
@@ -2756,6 +2723,7 @@ def _build_report(
         prepared_surface=target_attempt.prepared_surface,
         final_surface=target_attempt.final_surface,
         preparation_diagnostics=diagnostics,
+        functionalization_steric_settings=steric_settings,
         timing_summary=timing_summary,
     )
 
@@ -2766,11 +2734,11 @@ class AmorphousSlitBuilder:
 
     Parameters
     ----------
-    config : AmorphousSlitConfig, optional
+    config : AmorphousSlitConfig
         Base slit geometry, surface target, and silica-topology settings.
     """
 
-    config: AmorphousSlitConfig = field(default_factory=AmorphousSlitConfig)
+    config: AmorphousSlitConfig
 
     def prepare(self):
         """Prepare a bare attach-ready slit.
@@ -2831,30 +2799,29 @@ class AmorphousSlitBuilder:
             progress_tracker.close()
 
 
-def prepare_amorphous_slit_surface(config=None):
+def prepare_amorphous_slit_surface(config):
     """Prepare a bare amorphous slit through :class:`AmorphousSlitBuilder`.
 
     Parameters
     ----------
-    config : AmorphousSlitConfig or None, optional
-        Bare slit configuration. Defaults to :class:`AmorphousSlitConfig`.
+    config : AmorphousSlitConfig
+        Bare slit configuration, including the required physical
+        surface-silicon fraction.
 
     Returns
     -------
     result : SlitPreparationResult
         Prepared attach-ready bare slit and report.
     """
-    return AmorphousSlitBuilder(
-        AmorphousSlitConfig() if config is None else config
-    ).prepare()
+    return AmorphousSlitBuilder(config).prepare()
 
 
 def _prepare_bare_amorphous_slit_surface(config):
-    """Prepare a bare amorphous slit surface from alpha-aware experimental data.
+    """Prepare a bare slit from a physically mapped experimental target.
 
     Parameters
     ----------
-    config : AmorphousSlitConfig, optional
+    config : AmorphousSlitConfig
         Bare slit preparation configuration.
 
     Returns
@@ -2879,8 +2846,9 @@ def _prepare_bare_amorphous_slit_surface(config):
     ...     slit_width_nm=7.0,
     ...     repeat_y=2,
     ...     surface_target=sms.ExperimentalSiliconStateTarget(
-    ...         q2_fraction=66 / 40000,
-    ...         q3_fraction=650 / 40000,
+    ...         q2_fraction=0.0170,
+    ...         q3_fraction=0.1675,
+    ...         surface_silicon_fraction=0.60,
     ...     ),
     ... )
     >>> result = sms.prepare_amorphous_slit_surface(config)
@@ -2892,15 +2860,7 @@ def _prepare_bare_amorphous_slit_surface(config):
         raise ValueError("Bare slit preparation requires t2_fraction == 0 and t3_fraction == 0.")
 
     build = _build_base_slit_system(config)
-    alpha_auto, alpha_effective = _effective_alpha(
-        build.total_surface_si,
-        build.total_active_si,
-        config.surface_target,
-    )
-    derived_surface_target = _surface_target_from_experimental(
-        config.surface_target,
-        alpha_effective,
-    )
+    derived_surface_target = _surface_target_from_experimental(config.surface_target)
     exact_target = _nearest_integer_composition(build.total_surface_si, derived_surface_target)
     rng = _realization_rng(config.random_seed)
     target_attempt = _realize_surface_target(
@@ -2916,8 +2876,6 @@ def _prepare_bare_amorphous_slit_surface(config):
     )
     report = _build_report(
         config,
-        alpha_auto,
-        alpha_effective,
         derived_surface_target,
         target_attempt,
         build.initial_surface,
@@ -2957,6 +2915,7 @@ def prepare_functionalized_amorphous_slit_surface(config):
     ...         surface_target=sms.ExperimentalSiliconStateTarget(
     ...             q2_fraction=63 / 20000,
     ...             q3_fraction=648 / 20000,
+    ...             surface_silicon_fraction=1.0,
     ...             t2_fraction=3 / 20000,
     ...             t3_fraction=4 / 20000,
     ...         ),
@@ -3000,14 +2959,8 @@ def _prepare_functionalized_amorphous_slit_surface(config, progress_tracker):
     build = _build_base_slit_system(slit_config)
     base_slit_build_s = perf_counter() - build_start
     progress_tracker.update_stage(1)
-    alpha_auto, alpha_effective = _effective_alpha(
-        build.total_surface_si,
-        build.total_active_si,
-        slit_config.surface_target,
-    )
     derived_surface_target = _surface_target_from_experimental(
-        slit_config.surface_target,
-        alpha_effective,
+        slit_config.surface_target
     )
     exact_target = _nearest_integer_composition(build.total_surface_si, derived_surface_target)
     rng = _realization_rng(slit_config.random_seed)
@@ -3031,11 +2984,10 @@ def _prepare_functionalized_amorphous_slit_surface(config, progress_tracker):
     )
     report = _build_report(
         slit_config,
-        alpha_auto,
-        alpha_effective,
         derived_surface_target,
         target_attempt,
         build.initial_surface,
+        steric_settings=config.steric_settings,
         timing_summary=timing_summary,
     )
     return FunctionalizedSlitResult(
@@ -3115,7 +3067,7 @@ def _write_slit_structure_outputs(
 
 def write_bare_amorphous_slit(
     output_dir,
-    config=None,
+    config,
     write_object_files=False,
     write_pdb=False,
     write_pdb_conect=True,
@@ -3129,8 +3081,9 @@ def write_bare_amorphous_slit(
     ----------
     output_dir : str
         Output directory for the generated slit files and JSON report.
-    config : AmorphousSlitConfig, optional
-        Bare slit preparation configuration.
+    config : AmorphousSlitConfig
+        Bare slit preparation configuration, including the required physical
+        surface-silicon fraction.
     write_object_files : bool, optional
         When ``True``, also serialize the finalized structural snapshot and
         full :class:`silicams.slit_system.SilicaSlit` state as ``.obj`` files.
@@ -3163,7 +3116,13 @@ def write_bare_amorphous_slit(
     >>> import silicams as sms
     >>> result = sms.write_bare_amorphous_slit(
     ...     "output/bare_amorphous_slit",
-    ...     sms.AmorphousSlitConfig(),
+    ...     sms.AmorphousSlitConfig(
+    ...         surface_target=sms.ExperimentalSiliconStateTarget(
+    ...             q2_fraction=0.0170,
+    ...             q3_fraction=0.1675,
+    ...             surface_silicon_fraction=0.60,
+    ...         ),
+    ...     ),
     ... )
     >>> _ = result.bare_charge_diagnostics.is_neutral
     """
@@ -3315,6 +3274,7 @@ def write_functionalized_amorphous_slit(
     ...         surface_target=sms.ExperimentalSiliconStateTarget(
     ...             q2_fraction=63 / 20000,
     ...             q3_fraction=648 / 20000,
+    ...             surface_silicon_fraction=1.0,
     ...             t2_fraction=3 / 20000,
     ...             t3_fraction=4 / 20000,
     ...         ),
@@ -3359,6 +3319,7 @@ def write_functionalized_amorphous_slit(
     ...         surface_target=sms.ExperimentalSiliconStateTarget(
     ...             q2_fraction=63 / 20000,
     ...             q3_fraction=648 / 20000,
+    ...             surface_silicon_fraction=1.0,
     ...             t2_fraction=3 / 20000,
     ...             t3_fraction=4 / 20000,
     ...         ),

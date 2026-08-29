@@ -1,0 +1,87 @@
+{
+  "name": "msn_6_4",
+  "temperature_k": 300.0,
+  "box_nm": [
+    9.605,
+    9.605,
+    9.605
+  ],
+  "slit_width_nm": 7.0,
+  "wall_thickness_nm": 1.3025000000000002,
+  "site_ex": 0,
+  "siloxane_bridges": 114,
+  "siloxane_distance_range_nm": [
+    0.4,
+    0.65
+  ],
+  "surface_fraction_tolerance": 0.005,
+  "random_seed": 33,
+  "alpha_auto": 0.16261682242990655,
+  "alpha_effective": 0.398,
+  "used_surface_tolerance": false,
+  "experimental_target": {
+    "q2_fraction": 0.0149,
+    "q3_fraction": 0.0976,
+    "q4_fraction": 0.6434,
+    "t2_fraction": 0.0605,
+    "t3_fraction": 0.1836,
+    "alpha_override": 0.398
+  },
+  "derived_surface_target": {
+    "q2_fraction": 0.03743718592964824,
+    "q3_fraction": 0.24522613065326634,
+    "q4_fraction": 0.10402010050251254,
+    "t2_fraction": 0.15201005025125627,
+    "t3_fraction": 0.4613065326633166
+  },
+  "initial_surface": {
+    "total_surface_si": 957,
+    "q2_sites": 309,
+    "q3_sites": 648,
+    "q4_sites": 0,
+    "t2_sites": 0,
+    "t3_sites": 0
+  },
+  "target_surface": {
+    "total_surface_si": 957,
+    "q2_sites": 36,
+    "q3_sites": 235,
+    "q4_sites": 100,
+    "t2_sites": 145,
+    "t3_sites": 441
+  },
+  "prepared_surface": {
+    "total_surface_si": 957,
+    "q2_sites": 181,
+    "q3_sites": 676,
+    "q4_sites": 100,
+    "t2_sites": 0,
+    "t3_sites": 0
+  },
+  "final_surface": {
+    "total_surface_si": 957,
+    "q2_sites": 36,
+    "q3_sites": 235,
+    "q4_sites": 100,
+    "t2_sites": 145,
+    "t3_sites": 441
+  },
+  "preparation_diagnostics": {
+    "stripped_undercoordinated_si": 14040,
+    "stripped_excess_surface_oxygen_si": 75,
+    "removed_orphan_oxygen": 27597,
+    "removed_invalid_oxygen": 0,
+    "removed_orphan_silicon": 0,
+    "inserted_bridge_oxygen": 114,
+    "final_surface_oxygen_handles": 307,
+    "final_framework_oxygen": 11251
+  },
+  "timing_summary": {
+    "base_slit_build_s": 0.9862377079844009,
+    "q_state_preparation_s": 1.6443292920012027,
+    "t2_attachment_s": 0.40633541700663045,
+    "t3_attachment_s": 1.1422273330099415,
+    "finalize_s": 0.15385816598427482,
+    "store_export_s": 0.9257420000212733
+  }
+}
