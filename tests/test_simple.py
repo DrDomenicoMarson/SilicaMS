@@ -527,6 +527,11 @@ class TestUserModel:
         assert report.error_count > 0
         assert any(finding.code == "unexpected_degree" for finding in report.findings)
 
+        default_path = os.path.join("output", "invalid_valence_default.gro")
+        with pytest.raises(ValueError, match="Connectivity validation found"):
+            store.write_gro("invalid_valence_default.gro", use_atom_names=True)
+        assert not os.path.exists(default_path)
+
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             store.write_gro("invalid_valence_warn.gro", use_atom_names=True, validate_connectivity="warn")
@@ -628,7 +633,7 @@ class TestUserModel:
         pattern = beta_cristobalit.pattern()
         pattern.set_name("pattern_beta_cbt_minimal")
         assert pattern.get_num() == 36
-        sms.StructureWriter(pattern, "output").write_gro()
+        sms.StructureWriter(pattern, "output").write_gro(validate_connectivity="off")
 
         # Generation and Orientation
         beta_cristobalit = BetaCristobalit()
@@ -636,21 +641,27 @@ class TestUserModel:
         beta_cristobalit.get_block().set_name("pattern_beta_cbt_x")
         assert beta_cristobalit.get_size() == [2.480, 1.754, 2.024]
         assert [round(x, 3) for x in beta_cristobalit.get_block().get_box()] == [2.480, 1.754, 2.024]
-        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro()
+        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro(
+            validate_connectivity="off"
+        )
 
         beta_cristobalit = BetaCristobalit()
         beta_cristobalit.generate([2, 2, 2], "y")
         beta_cristobalit.get_block().set_name("pattern_beta_cbt_y")
         assert beta_cristobalit.get_size() == [2.024, 2.480, 1.754]
         assert [round(x, 3) for x in beta_cristobalit.get_block().get_box()] == [2.024, 2.480, 1.754]
-        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro()
+        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro(
+            validate_connectivity="off"
+        )
 
         beta_cristobalit = BetaCristobalit()
         beta_cristobalit.generate([2, 2, 2], "z")
         beta_cristobalit.get_block().set_name("pattern_beta_cbt_z")
         assert beta_cristobalit.get_size() == [2.024, 1.754, 2.480]
         assert [round(x, 3) for x in beta_cristobalit.get_block().get_box()] == [2.024, 1.754, 2.480]
-        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro()
+        sms.StructureWriter(beta_cristobalit.get_block(), "output").write_gro(
+            validate_connectivity="off"
+        )
         sms.StructureWriter(beta_cristobalit.get_block(), "output").write_lammps()
 
         # Misc
@@ -722,7 +733,7 @@ class TestUserModel:
     def test_dice(self):
         block = BetaCristobalit().generate([2, 2, 2], "z")
         block.set_name("dice")
-        sms.StructureWriter(block, "output").write_gro()
+        sms.StructureWriter(block, "output").write_gro(validate_connectivity="off")
         dice = Dice(block, 0.4, True)
 
         # Splitting and filling
@@ -764,7 +775,7 @@ class TestUserModel:
         orient = "z"
         block = BetaCristobalit().generate([1, 1, 1], orient)
         block.set_name("matrix")
-        sms.StructureWriter(block, "output").write_gro()
+        sms.StructureWriter(block, "output").write_gro(validate_connectivity="off")
         dice = Dice(block, 0.2, True)
         bonds = dice.find(None, ["Si", "O"], [0.155-1e-2, 0.155+1e-2])
 
@@ -833,7 +844,7 @@ class TestUserModel:
         assert block.get_num() == 12650
 
         # Write molecule
-        sms.StructureWriter(block, "output").write_gro()
+        sms.StructureWriter(block, "output").write_gro(validate_connectivity="off")
 
         # Plot surface
         plt.figure()
@@ -876,7 +887,7 @@ class TestUserModel:
         assert block.get_num() == 12934
 
         # Write molecule
-        sms.StructureWriter(block, "output").write_gro()
+        sms.StructureWriter(block, "output").write_gro(validate_connectivity="off")
 
         # Plot surface
         sphere.plot(inp=3.14, vec=[1.08001048, 3.09687610, 1.72960828])
@@ -916,7 +927,7 @@ class TestUserModel:
         assert block.get_num() == 5160
 
         # Write molecule
-        sms.StructureWriter(block, "output").write_gro()
+        sms.StructureWriter(block, "output").write_gro(validate_connectivity="off")
 
         # Plot surface
         cuboid.plot()
@@ -963,7 +974,7 @@ class TestUserModel:
         assert block.get_num() == 12486
 
         # Write molecule
-        sms.StructureWriter(block, "output").write_gro()
+        sms.StructureWriter(block, "output").write_gro(validate_connectivity="off")
 
         # Plot surface
         plt.figure()

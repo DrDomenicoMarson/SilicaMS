@@ -97,3 +97,9 @@ Writers and object output
 High-level write functions finalize once and pass one immutable snapshot to
 the structure and topology writers. Object serialization is opt-in through
 ``write_object_files=True`` and supports SilicaMS objects only.
+
+GRO, PDB, and mmCIF connectivity validation defaults to ``strict``. Invalid
+assembled chemistry prevents output unless ``warn`` or ``off`` is selected
+explicitly. High-level structure, metadata, report, and optional topology
+files are staged and promoted together, preserving the previous complete set
+when a handled late export failure occurs.

@@ -25,9 +25,14 @@ For example, reuse geometry written by the construction workflow explicitly:
 
 The equivalent Python entry points are ``silicams.fill_slit`` and
 ``silicams.estimate_guest_density``. Both return structured dataclass reports.
-The filling implementation preserves complete guest residues, applies
-all-atom clash and aromatic-ring crossing checks, and can restrict guests to
-the slit interval. Geometry may be supplied as a ``PeriodicSlitGeometry``
+The filling implementation preserves complete guest residues and supports
+mixed reservoirs. It applies center cropping, the optional surface-plane
+filter, the all-atom clash check, and every applicable aromatic-ring crossing
+check to all residue types. ``target_resname`` selects the species used for
+density and target-specific summary fields; ``GuestResidueFilterSummary``
+records filtering outcomes for every residue name. Monatomic and non-aromatic
+residues skip only inapplicable bond or reverse-ring checks. Geometry may be
+supplied as a ``PeriodicSlitGeometry``
 object through Python or as an explicit schema-v1 YAML path through either
 interface. When neither is supplied, SilicaMS infers two mean planes from
 hydroxylated surface Si atoms. It never discovers a neighboring YAML file
@@ -43,6 +48,14 @@ nm`` cutoff. These are construction heuristics rather than force-field-valid
 contact distances, and the aromatic-ring crossing checks remain independent
 of the selected cutoff. Inspect and minimize every filled system before
 equilibration.
+
+The public configuration dataclasses reject NaN and infinite scientific
+parameters. Counts, repetitions, indices, and seeds require genuine integer
+values; boolean and integer-valued float inputs are rejected.
+
+The merged GRO, output geometry YAML, and human-readable log are staged and
+promoted together. If a handled late failure occurs, existing outputs remain
+unchanged and a new partial set is not exposed.
 
 The signed ``surface_plane_padding_nm`` contracts the mean-plane interval when
 positive and expands it when negative. The resulting width must stay positive

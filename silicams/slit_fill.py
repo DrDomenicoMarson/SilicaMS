@@ -22,6 +22,8 @@ from numpy.typing import NDArray
 from scipy.spatial import cKDTree
 
 import silicams.database as db
+from silicams._output_transaction import staged_output_paths
+from silicams._validation import boolean, finite_real, integral
 from silicams.slit_geometry import (
     AXIS_NAMES,
     PeriodicSlitGeometry,
@@ -45,6 +47,7 @@ __all__ = [
     "SlitFillConfig",
     "DensityProbeEstimate",
     "DensityEstimate",
+    "GuestResidueFilterSummary",
     "SlitFillReport",
     "SlitDensityConfig",
     "SlitDensityReport",
@@ -77,7 +80,9 @@ class SlitFillConfig:
         Schema-v1 slit geometry YAML file. The file is read only when supplied
         explicitly; neighboring files are never discovered automatically.
     target_resname : str, optional
-        Residue name used to identify removable guest molecules.
+        Residue name used for density calculations and target-specific report
+        fields. All cropped residue types are screened by the physical filling
+        filters.
     general_cutoff_nm : float, optional
         Lower all-atom clash cutoff in nanometers. The ``0.10 nm`` default is
         deliberately permissive and intended to produce a starting
@@ -95,7 +100,7 @@ class SlitFillConfig:
         When ``True``, bonds to hydrogen atoms also participate in the explicit
         ring-crossing checks.
     use_surface_plane_filter : bool, optional
-        When ``True``, remove target residues with atoms outside the detected
+        When ``True``, remove any cropped residue with atoms outside the detected
         slit interval.
     surface_plane_padding_nm : float, optional
         Signed padding applied on both sides of the detected slit interval.
@@ -137,30 +142,61 @@ class SlitFillConfig:
     def __post_init__(self) -> None:
         """Validate configuration values that do not require file inspection."""
 
-        if not np.isfinite(self.general_cutoff_nm) or self.general_cutoff_nm <= 0.0:
+        general_cutoff_nm = finite_real("general_cutoff_nm", self.general_cutoff_nm)
+        ring_plane_tolerance_nm = finite_real(
+            "ring_plane_tolerance_nm",
+            self.ring_plane_tolerance_nm,
+        )
+        ring_polygon_padding_nm = finite_real(
+            "ring_polygon_padding_nm",
+            self.ring_polygon_padding_nm,
+        )
+        surface_plane_padding_nm = finite_real(
+            "surface_plane_padding_nm",
+            self.surface_plane_padding_nm,
+        )
+        if general_cutoff_nm <= 0.0:
             raise ValueError(
                 "The general clash cutoff must be finite and strictly positive."
             )
-        if self.ring_plane_tolerance_nm < 0.0:
+        if ring_plane_tolerance_nm < 0.0:
             raise ValueError("The ring-plane tolerance must be non-negative.")
-        if self.ring_polygon_padding_nm < 0.0:
+        if ring_polygon_padding_nm < 0.0:
             raise ValueError("The ring polygon padding must be non-negative.")
-        if not np.isfinite(self.surface_plane_padding_nm):
-            raise ValueError("The surface-plane padding must be finite.")
         if self.slit_geometry is not None and self.slit_geometry_path is not None:
             raise ValueError(
                 "Supply either slit_geometry or slit_geometry_path, not both."
             )
         if not self.density_probe_radii_nm:
             raise ValueError("At least one density probe radius must be provided.")
-        if any(radius < 0.0 for radius in self.density_probe_radii_nm):
+        probe_radii = tuple(
+            finite_real("density probe radius", radius)
+            for radius in self.density_probe_radii_nm
+        )
+        if any(radius < 0.0 for radius in probe_radii):
             raise ValueError("All density probe radii must be non-negative.")
-        if self.density_sample_count <= 0:
+        density_sample_count = integral("density_sample_count", self.density_sample_count)
+        density_seed_count = integral("density_seed_count", self.density_seed_count)
+        if density_sample_count <= 0:
             raise ValueError("The density sample count must be strictly positive.")
-        if self.density_seed_count <= 0:
+        if density_seed_count <= 0:
             raise ValueError("The density seed count must be strictly positive.")
-        if self.random_seed is not None and self.random_seed < 0:
-            raise ValueError("The random seed must be non-negative.")
+        random_seed = None
+        if self.random_seed is not None:
+            random_seed = integral("random_seed", self.random_seed)
+            if random_seed < 0:
+                raise ValueError("The random seed must be non-negative.")
+        boolean("include_hydrogen_bonds_in_ring_check", self.include_hydrogen_bonds_in_ring_check)
+        boolean("use_surface_plane_filter", self.use_surface_plane_filter)
+        boolean("wrap_output", self.wrap_output)
+        object.__setattr__(self, "general_cutoff_nm", general_cutoff_nm)
+        object.__setattr__(self, "ring_plane_tolerance_nm", ring_plane_tolerance_nm)
+        object.__setattr__(self, "ring_polygon_padding_nm", ring_polygon_padding_nm)
+        object.__setattr__(self, "surface_plane_padding_nm", surface_plane_padding_nm)
+        object.__setattr__(self, "density_probe_radii_nm", probe_radii)
+        object.__setattr__(self, "density_sample_count", density_sample_count)
+        object.__setattr__(self, "density_seed_count", density_seed_count)
+        object.__setattr__(self, "random_seed", random_seed)
 
 
 @dataclass(frozen=True)
@@ -245,11 +281,63 @@ class DensityEstimate:
 
 
 @dataclass(frozen=True)
+class GuestResidueFilterSummary:
+    """Residue-level filling outcomes for one guest residue name.
+
+    Parameters
+    ----------
+    residue_name : str
+        Guest residue name summarized by this record.
+    initial_residues : int
+        Number of matching residues in the input reservoir.
+    cropped_residues : int
+        Number retained by center cropping.
+    removed_outside_crop_residues : int
+        Number excluded by center cropping.
+    surface_plane_filtered_residues : int
+        Number remaining after the optional slit-plane filter.
+    removed_by_surface_plane_residues : int
+        Number removed by the slit-plane filter.
+    removed_by_general_cutoff_residues : int
+        Number intersecting the general all-atom cutoff.
+    removed_by_forward_ring_residues : int
+        Number whose bonds cross a slit aromatic ring.
+    removed_by_reverse_ring_residues : int
+        Number whose aromatic ring is crossed by a slit bond.
+    removed_by_any_ring_residues : int
+        Number removed by either ring-crossing direction.
+    removed_by_any_clash_residues : int
+        Number removed by the general or ring filters.
+    removed_total_residues : int
+        Total removed by cropping, plane filtering, or clash filtering.
+    remaining_residues : int
+        Number written to the merged output.
+    """
+
+    residue_name: str
+    initial_residues: int
+    cropped_residues: int
+    removed_outside_crop_residues: int
+    surface_plane_filtered_residues: int
+    removed_by_surface_plane_residues: int
+    removed_by_general_cutoff_residues: int
+    removed_by_forward_ring_residues: int
+    removed_by_reverse_ring_residues: int
+    removed_by_any_ring_residues: int
+    removed_by_any_clash_residues: int
+    removed_total_residues: int
+    remaining_residues: int
+
+
+@dataclass(frozen=True)
 class SlitFillReport:
     """Summary of one slit guest-filling workflow.
 
     Parameters
     ----------
+    residue_filter_summaries : tuple[GuestResidueFilterSummary, ...]
+        Per-residue-name filtering outcomes for every guest type present in the
+        input reservoir.
     initial_guest_molecules : int
         Number of target guest residues found in the input guest box.
     cropped_guest_molecules : int
@@ -304,15 +392,16 @@ class SlitFillReport:
     slit_aromatic_ring_count : int
         Number of aromatic slit rings used in the forward ring-crossing check.
     cropped_guest_ring_count : int
-        Number of target aromatic rings built for the cropped guest residues.
-    guest_bonds_checked_per_molecule : int
-        Number of guessed target bonds checked against slit aromatic rings for
-        each target molecule.
+        Number of aromatic rings built across all selected guest residues.
+    guest_bond_template_count : int
+        Number of distinct guest residue bond templates used.
+    guest_bond_count_checked : int
+        Number of guest bond segments checked against slit aromatic rings.
     slit_bond_template_count : int
         Number of unique slit residue bond templates used in the reverse
         ring-crossing check.
     slit_bond_count_checked : int
-        Number of slit bond segments checked against target aromatic rings.
+        Number of slit bond segments checked against guest aromatic rings.
     density_estimate : DensityEstimate
         Density metrics derived for the retained guest population.
     slit_atom_count : int
@@ -330,6 +419,7 @@ class SlitFillReport:
         Orthorhombic box lengths written to the merged output.
     """
 
+    residue_filter_summaries: tuple[GuestResidueFilterSummary, ...]
     initial_guest_molecules: int
     cropped_guest_molecules: int
     removed_outside_crop_guest_molecules: int
@@ -353,7 +443,8 @@ class SlitFillReport:
     remaining_guest_molecules: int
     slit_aromatic_ring_count: int
     cropped_guest_ring_count: int
-    guest_bonds_checked_per_molecule: int
+    guest_bond_template_count: int
+    guest_bond_count_checked: int
     slit_bond_template_count: int
     slit_bond_count_checked: int
     density_estimate: DensityEstimate
@@ -418,16 +509,32 @@ class SlitDensityConfig:
             raise ValueError(
                 "Supply either slit_geometry or slit_geometry_path, not both."
             )
-        if not np.isfinite(self.surface_plane_padding_nm):
-            raise ValueError("The surface-plane padding must be finite.")
-        if any(radius < 0.0 for radius in self.density_probe_radii_nm):
+        surface_plane_padding_nm = finite_real(
+            "surface_plane_padding_nm",
+            self.surface_plane_padding_nm,
+        )
+        probe_radii = tuple(
+            finite_real("density probe radius", radius)
+            for radius in self.density_probe_radii_nm
+        )
+        if any(radius < 0.0 for radius in probe_radii):
             raise ValueError("All density probe radii must be non-negative.")
-        if self.density_sample_count <= 0:
+        density_sample_count = integral("density_sample_count", self.density_sample_count)
+        density_seed_count = integral("density_seed_count", self.density_seed_count)
+        if density_sample_count <= 0:
             raise ValueError("The density sample count must be strictly positive.")
-        if self.density_seed_count <= 0:
+        if density_seed_count <= 0:
             raise ValueError("The density seed count must be strictly positive.")
-        if self.random_seed is not None and self.random_seed < 0:
-            raise ValueError("The random seed must be non-negative.")
+        random_seed = None
+        if self.random_seed is not None:
+            random_seed = integral("random_seed", self.random_seed)
+            if random_seed < 0:
+                raise ValueError("The random seed must be non-negative.")
+        object.__setattr__(self, "surface_plane_padding_nm", surface_plane_padding_nm)
+        object.__setattr__(self, "density_probe_radii_nm", probe_radii)
+        object.__setattr__(self, "density_sample_count", density_sample_count)
+        object.__setattr__(self, "density_seed_count", density_seed_count)
+        object.__setattr__(self, "random_seed", random_seed)
 
 
 @dataclass(frozen=True)
@@ -492,7 +599,7 @@ class _GroSystem:
 
 @dataclass(frozen=True)
 class _SurfacePlaneSelection:
-    """Result of filtering target residues against the detected slit interval."""
+    """Result of filtering guest residues against the detected slit interval."""
 
     selected_residue_mask: BoolArray
     removed_residue_mask: BoolArray
@@ -574,9 +681,9 @@ class _RingCheckCache:
     """Cached geometry data reused for reporting after clash detection."""
 
     slit_ring_geometries: tuple[_RingGeometry, ...]
-    target_bond_template: tuple[_BondDefinition, ...]
-    target_ring_template: _RingTemplate
-    target_ring_geometries: tuple[_RingGeometry, ...]
+    guest_bond_templates: tuple[_ResidueBondTemplate, ...]
+    guest_bond_geometries: tuple[_BondSegmentGeometry, ...]
+    guest_ring_geometries: tuple[_RingGeometry, ...]
     slit_bond_templates: tuple[_ResidueBondTemplate, ...]
     slit_bond_geometries: tuple[_BondSegmentGeometry, ...]
 
@@ -593,11 +700,27 @@ def _resolve_fill_config(config: SlitFillConfig) -> SlitFillConfig:
     -------
     SlitFillConfig
         Configuration with ``log_path`` populated.
+
+    Raises
+    ------
+    ValueError
+        Raised when the GRO, geometry YAML, and log destinations are not
+        distinct.
     """
 
-    if config.log_path is not None:
-        return config
-    return replace(config, log_path=config.output_path.with_suffix(".log"))
+    resolved = (
+        config
+        if config.log_path is not None
+        else replace(config, log_path=config.output_path.with_suffix(".log"))
+    )
+    output_paths = (
+        resolved.output_path,
+        resolved.output_path.with_suffix(".yml"),
+        resolved.log_path,
+    )
+    if len(output_paths) != len(set(output_paths)):
+        raise ValueError("Fill GRO, geometry YAML, and log paths must be distinct.")
+    return resolved
 
 
 def _resolve_density_config(config: SlitDensityConfig) -> SlitDensityConfig:
@@ -1195,11 +1318,10 @@ def _apply_surface_plane_filter(
     guest_system: _GroSystem,
     translated_guest_coordinates: FloatArray,
     selected_residue_mask: BoolArray,
-    target_resname: str,
     slit_geometry: PeriodicSlitGeometry,
     padding_nm: float,
 ) -> _SurfacePlaneSelection:
-    """Remove target residues that fall outside the detected slit planes.
+    """Remove selected residues that fall outside the detected slit planes.
 
     Parameters
     ----------
@@ -1209,8 +1331,6 @@ def _apply_surface_plane_filter(
         Guest coordinates already translated into the slit reference frame.
     selected_residue_mask : ndarray
         Residue mask after center-cropping.
-    target_resname : str
-        Residue name to filter against the slit planes.
     slit_geometry : PeriodicSlitGeometry
         Periodic mean-plane slit geometry.
     padding_nm : float
@@ -1226,7 +1346,7 @@ def _apply_surface_plane_filter(
     removed_residue_mask = np.zeros(len(guest_system.residue_spans), dtype=bool)
 
     for residue_index, residue_span in enumerate(guest_system.residue_spans):
-        if not selected_residue_mask[residue_index] or residue_span.residue_name != target_resname:
+        if not selected_residue_mask[residue_index]:
             continue
 
         residue_coordinates = translated_guest_coordinates[
@@ -1299,57 +1419,6 @@ def _guess_bond_definitions(
     return tuple(bond_definitions)
 
 
-def _guess_target_residue_bonds(
-    guest_system: _GroSystem,
-    target_resname: str,
-    include_hydrogen_bonds: bool,
-) -> tuple[_BondDefinition, ...]:
-    """Guess covalent bonds for the target guest residue template.
-
-    Parameters
-    ----------
-    guest_system : _GroSystem
-        Loaded guest system.
-    target_resname : str
-        Residue name used to select the target template.
-    include_hydrogen_bonds : bool
-        Whether bonds to hydrogen atoms should be kept in the template.
-
-    Returns
-    -------
-    tuple[_BondDefinition, ...]
-        Guessed bond template for the target residue.
-
-    Raises
-    ------
-    ValueError
-        Raised when the target residue is missing or no covalent bonds can be
-        inferred.
-    """
-
-    for residue_span in guest_system.residue_spans:
-        if residue_span.residue_name != target_resname:
-            continue
-
-        residue_coordinates = _unwrap_residue_coordinates(
-            guest_system.coordinates[residue_span.start:residue_span.stop],
-            guest_system.box_lengths,
-        )
-        atom_names = tuple(guest_system.atom_names[residue_span.start:residue_span.stop])
-        bond_definitions = _guess_bond_definitions(
-            atom_names=atom_names,
-            residue_coordinates=residue_coordinates,
-            include_hydrogen_bonds=include_hydrogen_bonds,
-        )
-        if not bond_definitions:
-            raise ValueError(
-                f"No covalent bonds were guessed for residue name {target_resname!r}."
-            )
-        return bond_definitions
-
-    raise ValueError(f"No residue named {target_resname!r} was found for bond guessing.")
-
-
 def _build_ring_template_from_atom_names(
     residue_name: str,
     atom_names: tuple[str, ...],
@@ -1371,54 +1440,6 @@ def _build_ring_template_from_atom_names(
         local_atom_indices=local_atom_indices,
         ring_atom_names=tuple(atom_names[atom_index] for atom_index in local_atom_indices),
     )
-
-
-def _build_target_ring_template(
-    guest_system: _GroSystem,
-    target_resname: str,
-    ring_atom_prefix: str,
-) -> _RingTemplate:
-    """Build the aromatic-ring template for the target guest residue.
-
-    Parameters
-    ----------
-    guest_system : _GroSystem
-        Loaded guest system.
-    target_resname : str
-        Residue name used to select the target template.
-    ring_atom_prefix : str
-        Prefix used to identify the six aromatic ring atoms.
-
-    Returns
-    -------
-    _RingTemplate
-        Ring template for the target residue.
-
-    Raises
-    ------
-    ValueError
-        Raised when the target residue does not contain exactly six matching
-        aromatic atom names.
-    """
-
-    for residue_span in guest_system.residue_spans:
-        if residue_span.residue_name != target_resname:
-            continue
-
-        atom_names = tuple(guest_system.atom_names[residue_span.start:residue_span.stop])
-        ring_template = _build_ring_template_from_atom_names(
-            residue_name=target_resname,
-            atom_names=atom_names,
-            ring_atom_prefix=ring_atom_prefix,
-        )
-        if ring_template is None:
-            raise ValueError(
-                f"Residue name {target_resname!r} does not contain exactly six atoms "
-                f"with prefix {ring_atom_prefix!r}."
-            )
-        return ring_template
-
-    raise ValueError(f"No residue named {target_resname!r} was found for ring-template building.")
 
 
 def _compute_target_residue_mass_da(
@@ -1794,33 +1815,130 @@ def _build_slit_ring_geometries(
     return tuple(ring_geometries)
 
 
-def _build_target_ring_geometries(
+def _build_guest_filter_geometries(
     guest_system: _GroSystem,
     translated_guest_coordinates: FloatArray,
     selected_residue_mask: BoolArray,
-    target_resname: str,
-    target_ring_template: _RingTemplate,
     final_box_lengths: FloatArray,
-) -> tuple[_RingGeometry, ...]:
-    """Build target aromatic-ring geometries for the selected target residues."""
+    ring_atom_prefix: str,
+    include_hydrogen_bonds: bool,
+) -> tuple[
+    tuple[_ResidueBondTemplate, ...],
+    tuple[_BondSegmentGeometry, ...],
+    tuple[_RingGeometry, ...],
+]:
+    """Build cached bond and optional ring geometry for all selected guests.
 
+    Parameters
+    ----------
+    guest_system : _GroSystem
+        Loaded guest reservoir.
+    translated_guest_coordinates : ndarray
+        Guest coordinates translated into the slit reference frame.
+    selected_residue_mask : ndarray
+        Residues retained by cropping and optional plane filtering.
+    final_box_lengths : ndarray
+        Periodic slit box lengths in nanometers.
+    ring_atom_prefix : str
+        Prefix identifying the accepted six aromatic ring atoms.
+    include_hydrogen_bonds : bool
+        Whether guessed bonds to hydrogen participate in forward ring checks.
+
+    Returns
+    -------
+    bond_templates : tuple[_ResidueBondTemplate, ...]
+        Unique bond templates keyed by residue name and atom-name signature.
+    bond_geometries : tuple[_BondSegmentGeometry, ...]
+        Actual bond segments for all selected multi-atom residues.
+    ring_geometries : tuple[_RingGeometry, ...]
+        Aromatic ring geometries for every selected ring-bearing residue.
+
+    Raises
+    ------
+    ValueError
+        Raised when a selected multi-atom residue has no safely inferred
+        covalent bonds. A residue whose only bonds are explicitly excluded
+        hydrogen bonds is accepted with no forward-ring segments.
+    """
+
+    template_cache: dict[tuple[str, tuple[str, ...]], _ResidueBondTemplate] = {}
+    bond_geometries: list[_BondSegmentGeometry] = []
     ring_geometries: list[_RingGeometry] = []
     for residue_index, residue_span in enumerate(guest_system.residue_spans):
-        if not selected_residue_mask[residue_index] or residue_span.residue_name != target_resname:
+        if not selected_residue_mask[residue_index]:
             continue
 
         residue_coordinates = translated_guest_coordinates[residue_span.start:residue_span.stop]
-        ring_geometries.append(
-            _build_ring_geometry(
-                residue_index=residue_index,
-                residue_name=residue_span.residue_name,
+        atom_names = tuple(guest_system.atom_names[residue_span.start:residue_span.stop])
+        template_key = (residue_span.residue_name, atom_names)
+        bond_template = template_cache.get(template_key)
+        if bond_template is None:
+            bond_definitions = _guess_bond_definitions(
+                atom_names=atom_names,
                 residue_coordinates=residue_coordinates,
-                ring_template=target_ring_template,
-                final_box_lengths=final_box_lengths,
+                include_hydrogen_bonds=include_hydrogen_bonds,
             )
-        )
+            if len(atom_names) > 1 and not bond_definitions:
+                all_bond_definitions = _guess_bond_definitions(
+                    atom_names=atom_names,
+                    residue_coordinates=residue_coordinates,
+                    include_hydrogen_bonds=True,
+                )
+                if not all_bond_definitions:
+                    raise ValueError(
+                        "No covalent bonds were guessed for selected multi-atom "
+                        f"guest residue {residue_span.residue_name!r} with atom "
+                        f"signature {atom_names!r}."
+                    )
+            bond_template = _ResidueBondTemplate(
+                residue_name=residue_span.residue_name,
+                atom_names=atom_names,
+                bond_definitions=bond_definitions,
+            )
+            template_cache[template_key] = bond_template
 
-    return tuple(ring_geometries)
+        for bond_definition in bond_template.bond_definitions:
+            start_point = residue_coordinates[bond_definition.start_atom_index]
+            stop_point = residue_coordinates[bond_definition.stop_atom_index]
+            midpoint = 0.5 * (start_point + stop_point)
+            bond_geometries.append(
+                _BondSegmentGeometry(
+                    residue_index=residue_index,
+                    residue_name=residue_span.residue_name,
+                    start_atom_name=bond_definition.start_atom_name,
+                    stop_atom_name=bond_definition.stop_atom_name,
+                    start_point=start_point,
+                    stop_point=stop_point,
+                    midpoint=midpoint,
+                    wrapped_midpoint=wrap_positions(
+                        midpoint[np.newaxis, :],
+                        final_box_lengths,
+                    )[0],
+                    half_length_nm=0.5 * float(np.linalg.norm(stop_point - start_point)),
+                )
+            )
+
+        ring_template = _build_ring_template_from_atom_names(
+            residue_name=residue_span.residue_name,
+            atom_names=atom_names,
+            ring_atom_prefix=ring_atom_prefix,
+        )
+        if ring_template is not None:
+            ring_geometries.append(
+                _build_ring_geometry(
+                    residue_index=residue_index,
+                    residue_name=residue_span.residue_name,
+                    residue_coordinates=residue_coordinates,
+                    ring_template=ring_template,
+                    final_box_lengths=final_box_lengths,
+                )
+            )
+
+    return (
+        tuple(template_cache.values()),
+        tuple(bond_geometries),
+        tuple(ring_geometries),
+    )
 
 
 def _build_slit_bond_geometries(
@@ -2024,21 +2142,53 @@ def _center_crop_guest_residues(
     return translated_coordinates, selected_residues, crop_window_start
 
 
-def _identify_clashing_target_residues(
+def _identify_clashing_guest_residues(
     guest_system: _GroSystem,
     slit_system: _GroSystem,
     translated_guest_coordinates: FloatArray,
     selected_residue_mask: BoolArray,
     slit_coordinates: FloatArray,
     final_box_lengths: FloatArray,
-    target_resname: str,
     general_cutoff_nm: float,
     ring_atom_prefix: str,
     ring_plane_tolerance_nm: float,
     ring_polygon_padding_nm: float,
     include_hydrogen_bonds_in_ring_check: bool,
 ) -> tuple[_ClashSelection, _RingCheckCache]:
-    """Mark target residues that clash with the slit structure."""
+    """Mark every selected guest residue that clashes with the slit.
+
+    Parameters
+    ----------
+    guest_system : _GroSystem
+        Loaded guest reservoir.
+    slit_system : _GroSystem
+        Loaded slit structure.
+    translated_guest_coordinates : ndarray
+        Guest coordinates translated into the slit reference frame.
+    selected_residue_mask : ndarray
+        Residues retained by cropping and optional plane filtering.
+    slit_coordinates : ndarray
+        Slit coordinates in the output-cell reference frame.
+    final_box_lengths : ndarray
+        Orthorhombic periodic box lengths in nanometers.
+    general_cutoff_nm : float
+        General all-atom guest-to-slit clash cutoff in nanometers.
+    ring_atom_prefix : str
+        Atom-name prefix identifying six-atom aromatic rings.
+    ring_plane_tolerance_nm : float
+        Maximum bond-to-ring-plane distance for a crossing.
+    ring_polygon_padding_nm : float
+        Additional in-plane ring-polygon padding.
+    include_hydrogen_bonds_in_ring_check : bool
+        Whether guessed bonds to hydrogen participate in forward ring checks.
+
+    Returns
+    -------
+    clash_selection : _ClashSelection
+        Per-residue masks for every clash mechanism.
+    ring_check_cache : _RingCheckCache
+        Cached templates and geometries used for reporting.
+    """
 
     residue_count = len(guest_system.residue_spans)
     removed_by_general = np.zeros(residue_count, dtype=bool)
@@ -2050,7 +2200,7 @@ def _identify_clashing_target_residues(
 
     candidate_atoms = np.zeros(guest_system.atom_count, dtype=bool)
     for residue_index, residue_span in enumerate(guest_system.residue_spans):
-        if selected_residue_mask[residue_index] and residue_span.residue_name == target_resname:
+        if selected_residue_mask[residue_index]:
             candidate_atoms[residue_span.start:residue_span.stop] = True
 
     if np.any(candidate_atoms):
@@ -2066,23 +2216,15 @@ def _identify_clashing_target_residues(
             residue_indices = guest_system.atom_to_residue_index[clashing_candidate_atoms]
             removed_by_general[np.unique(residue_indices)] = True
 
-    target_bond_template = _guess_target_residue_bonds(
-        guest_system=guest_system,
-        target_resname=target_resname,
-        include_hydrogen_bonds=include_hydrogen_bonds_in_ring_check,
-    )
-    target_ring_template = _build_target_ring_template(
-        guest_system=guest_system,
-        target_resname=target_resname,
-        ring_atom_prefix=ring_atom_prefix,
-    )
-    target_ring_geometries = _build_target_ring_geometries(
-        guest_system=guest_system,
-        translated_guest_coordinates=translated_guest_coordinates,
-        selected_residue_mask=selected_residue_mask,
-        target_resname=target_resname,
-        target_ring_template=target_ring_template,
-        final_box_lengths=final_box_lengths,
+    guest_bond_templates, guest_bond_geometries, guest_ring_geometries = (
+        _build_guest_filter_geometries(
+            guest_system=guest_system,
+            translated_guest_coordinates=translated_guest_coordinates,
+            selected_residue_mask=selected_residue_mask,
+            final_box_lengths=final_box_lengths,
+            ring_atom_prefix=ring_atom_prefix,
+            include_hydrogen_bonds=include_hydrogen_bonds_in_ring_check,
+        )
     )
     slit_ring_geometries = _build_slit_ring_geometries(
         slit_system=slit_system,
@@ -2097,14 +2239,14 @@ def _identify_clashing_target_residues(
     )
     ring_check_cache = _RingCheckCache(
         slit_ring_geometries=slit_ring_geometries,
-        target_bond_template=target_bond_template,
-        target_ring_template=target_ring_template,
-        target_ring_geometries=target_ring_geometries,
+        guest_bond_templates=guest_bond_templates,
+        guest_bond_geometries=guest_bond_geometries,
+        guest_ring_geometries=guest_ring_geometries,
         slit_bond_templates=slit_bond_templates,
         slit_bond_geometries=slit_bond_geometries,
     )
 
-    if slit_ring_geometries:
+    if slit_ring_geometries and guest_bond_geometries:
         slit_ring_center_tree = cKDTree(
             np.array([ring_geometry.wrapped_center for ring_geometry in slit_ring_geometries]),
             boxsize=final_box_lengths,
@@ -2112,71 +2254,35 @@ def _identify_clashing_target_residues(
         maximum_slit_ring_radius_nm = max(
             ring_geometry.max_radius_nm for ring_geometry in slit_ring_geometries
         )
-        template_span = next(
-            residue_span
-            for residue_span in guest_system.residue_spans
-            if residue_span.residue_name == target_resname
-        )
-        template_coordinates = _unwrap_residue_coordinates(
-            guest_system.coordinates[template_span.start:template_span.stop],
-            guest_system.box_lengths,
-        )
-        maximum_target_bond_length_nm = max(
-            float(
-                np.linalg.norm(
-                    template_coordinates[bond_definition.stop_atom_index]
-                    - template_coordinates[bond_definition.start_atom_index]
-                )
-            )
-            for bond_definition in target_bond_template
-        )
-
-        for residue_index, residue_span in enumerate(guest_system.residue_spans):
-            if not selected_residue_mask[residue_index] or residue_span.residue_name != target_resname:
-                continue
-
-            residue_coordinates = translated_guest_coordinates[residue_span.start:residue_span.stop]
-            residue_center = np.mean(residue_coordinates, axis=0)
-            residue_center_wrapped = wrap_positions(
-                residue_center[np.newaxis, :],
-                final_box_lengths,
-            )[0]
-            residue_radius_nm = float(np.max(np.linalg.norm(residue_coordinates - residue_center, axis=1)))
-            query_radius_nm = (
-                residue_radius_nm
-                + maximum_slit_ring_radius_nm
-                + maximum_target_bond_length_nm
-                + ring_plane_tolerance_nm
-                + ring_polygon_padding_nm
-            )
+        for bond_geometry in guest_bond_geometries:
             candidate_ring_indices = slit_ring_center_tree.query_ball_point(
-                residue_center_wrapped,
-                r=query_radius_nm,
+                bond_geometry.wrapped_midpoint,
+                r=(
+                    bond_geometry.half_length_nm
+                    + maximum_slit_ring_radius_nm
+                    + ring_plane_tolerance_nm
+                    + ring_polygon_padding_nm
+                ),
             )
-            if not candidate_ring_indices:
-                continue
-
             for ring_index in candidate_ring_indices:
                 ring_geometry = slit_ring_geometries[ring_index]
-                residue_near_ring = _shift_residue_near_reference(
-                    residue_coordinates=residue_coordinates,
+                shifted_start_point, shifted_stop_point = _shift_bond_near_reference(
+                    start_point=bond_geometry.start_point,
+                    stop_point=bond_geometry.stop_point,
                     reference_point=ring_geometry.center,
                     box_lengths=final_box_lengths,
                 )
-                for bond_definition in target_bond_template:
-                    if _bond_crosses_ring(
-                        bond_start=residue_near_ring[bond_definition.start_atom_index],
-                        bond_stop=residue_near_ring[bond_definition.stop_atom_index],
-                        ring_geometry=ring_geometry,
-                        plane_tolerance_nm=ring_plane_tolerance_nm,
-                        polygon_padding_nm=ring_polygon_padding_nm,
-                    ):
-                        removed_by_forward_ring[residue_index] = True
-                        break
-                if removed_by_forward_ring[residue_index]:
+                if _bond_crosses_ring(
+                    bond_start=shifted_start_point,
+                    bond_stop=shifted_stop_point,
+                    ring_geometry=ring_geometry,
+                    plane_tolerance_nm=ring_plane_tolerance_nm,
+                    polygon_padding_nm=ring_polygon_padding_nm,
+                ):
+                    removed_by_forward_ring[bond_geometry.residue_index] = True
                     break
 
-    if target_ring_geometries and slit_bond_geometries:
+    if guest_ring_geometries and slit_bond_geometries:
         slit_bond_midpoint_tree = cKDTree(
             np.array([bond_geometry.wrapped_midpoint for bond_geometry in slit_bond_geometries]),
             boxsize=final_box_lengths,
@@ -2185,35 +2291,32 @@ def _identify_clashing_target_residues(
             bond_geometry.half_length_nm for bond_geometry in slit_bond_geometries
         )
 
-        for target_ring_geometry in target_ring_geometries:
+        for guest_ring_geometry in guest_ring_geometries:
             candidate_bond_indices = slit_bond_midpoint_tree.query_ball_point(
-                target_ring_geometry.wrapped_center,
+                guest_ring_geometry.wrapped_center,
                 r=(
-                    target_ring_geometry.max_radius_nm
+                    guest_ring_geometry.max_radius_nm
                     + maximum_slit_bond_half_length_nm
                     + ring_plane_tolerance_nm
                     + ring_polygon_padding_nm
                 ),
             )
-            if not candidate_bond_indices:
-                continue
-
             for bond_index in candidate_bond_indices:
                 bond_geometry = slit_bond_geometries[bond_index]
                 shifted_start_point, shifted_stop_point = _shift_bond_near_reference(
                     start_point=bond_geometry.start_point,
                     stop_point=bond_geometry.stop_point,
-                    reference_point=target_ring_geometry.center,
+                    reference_point=guest_ring_geometry.center,
                     box_lengths=final_box_lengths,
                 )
                 if _bond_crosses_ring(
                     bond_start=shifted_start_point,
                     bond_stop=shifted_stop_point,
-                    ring_geometry=target_ring_geometry,
+                    ring_geometry=guest_ring_geometry,
                     plane_tolerance_nm=ring_plane_tolerance_nm,
                     polygon_padding_nm=ring_polygon_padding_nm,
                 ):
-                    removed_by_reverse_ring[target_ring_geometry.residue_index] = True
+                    removed_by_reverse_ring[guest_ring_geometry.residue_index] = True
                     break
 
     removed_by_any_ring = removed_by_forward_ring | removed_by_reverse_ring
@@ -2239,6 +2342,84 @@ def _build_kept_guest_atom_mask(
         if selected_residue_mask[residue_index] and not removed_residue_mask[residue_index]:
             keep_mask[residue_span.start:residue_span.stop] = True
     return keep_mask
+
+
+def _build_guest_filter_summaries(
+    guest_system: _GroSystem,
+    cropped_residue_mask: BoolArray,
+    selected_residue_mask: BoolArray,
+    surface_plane_removed_mask: BoolArray,
+    clash_selection: _ClashSelection,
+) -> tuple[GuestResidueFilterSummary, ...]:
+    """Summarize filtering outcomes for every guest residue name.
+
+    Parameters
+    ----------
+    guest_system : _GroSystem
+        Loaded guest reservoir.
+    cropped_residue_mask : ndarray
+        Residues retained by center cropping.
+    selected_residue_mask : ndarray
+        Residues remaining after optional plane filtering.
+    surface_plane_removed_mask : ndarray
+        Residues removed by the plane filter.
+    clash_selection : _ClashSelection
+        General and ring clash masks.
+
+    Returns
+    -------
+    summaries : tuple[GuestResidueFilterSummary, ...]
+        Deterministic summaries ordered by residue name.
+    """
+
+    residue_names = np.array(
+        [residue_span.residue_name for residue_span in guest_system.residue_spans],
+        dtype=object,
+    )
+    summaries = []
+    for residue_name in sorted(set(residue_names)):
+        name_mask = residue_names == residue_name
+        initial = int(np.count_nonzero(name_mask))
+        cropped = int(np.count_nonzero(cropped_residue_mask & name_mask))
+        surface_filtered = int(np.count_nonzero(selected_residue_mask & name_mask))
+        removed_by_surface = int(
+            np.count_nonzero(surface_plane_removed_mask & name_mask)
+        )
+        removed_by_general = int(
+            np.count_nonzero(clash_selection.removed_by_general_mask & name_mask)
+        )
+        removed_by_forward = int(
+            np.count_nonzero(clash_selection.removed_by_forward_ring_mask & name_mask)
+        )
+        removed_by_reverse = int(
+            np.count_nonzero(clash_selection.removed_by_reverse_ring_mask & name_mask)
+        )
+        removed_by_ring = int(
+            np.count_nonzero(clash_selection.removed_by_any_ring_mask & name_mask)
+        )
+        removed_by_clash = int(
+            np.count_nonzero(clash_selection.removed_residue_mask & name_mask)
+        )
+        removed_outside_crop = initial - cropped
+        removed_total = removed_outside_crop + removed_by_surface + removed_by_clash
+        summaries.append(
+            GuestResidueFilterSummary(
+                residue_name=str(residue_name),
+                initial_residues=initial,
+                cropped_residues=cropped,
+                removed_outside_crop_residues=removed_outside_crop,
+                surface_plane_filtered_residues=surface_filtered,
+                removed_by_surface_plane_residues=removed_by_surface,
+                removed_by_general_cutoff_residues=removed_by_general,
+                removed_by_forward_ring_residues=removed_by_forward,
+                removed_by_reverse_ring_residues=removed_by_reverse,
+                removed_by_any_ring_residues=removed_by_ring,
+                removed_by_any_clash_residues=removed_by_clash,
+                removed_total_residues=removed_total,
+                remaining_residues=initial - removed_total,
+            )
+        )
+    return tuple(summaries)
 
 
 def _format_gro_atom_line(
@@ -2563,7 +2744,7 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
     selection = _format_value_lines(
         "Selection",
         [
-            ("Target residue", config.target_resname),
+            ("Density/report residue", config.target_resname),
             ("General cutoff", f"{config.general_cutoff_nm:.3f} nm"),
             ("Surface-plane filter", str(config.use_surface_plane_filter)),
             ("Surface-plane padding", f"{config.surface_plane_padding_nm:.3f} nm"),
@@ -2627,7 +2808,8 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
             ),
             ("Slit aromatic rings", str(report.slit_aromatic_ring_count)),
             ("Guest aromatic rings", str(report.cropped_guest_ring_count)),
-            ("Guest bonds checked", str(report.guest_bonds_checked_per_molecule)),
+            ("Guest bond templates", str(report.guest_bond_template_count)),
+            ("Guest bonds checked", str(report.guest_bond_count_checked)),
             ("Slit bond templates", str(report.slit_bond_template_count)),
             ("Slit bonds checked", str(report.slit_bond_count_checked)),
             ("Removed by forward ring", str(report.removed_by_forward_ring_guest_molecules)),
@@ -2675,6 +2857,25 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
         _format_probe_block(probe_estimate)
         for probe_estimate in report.density_estimate.probe_estimates
     )
+    residue_filter_details = "\n\n".join(
+        _format_value_lines(
+            f"Residue filtering: {summary.residue_name}",
+            [
+                ("Initial", str(summary.initial_residues)),
+                ("Cropped", str(summary.cropped_residues)),
+                ("Removed outside crop", str(summary.removed_outside_crop_residues)),
+                ("After surface-plane filter", str(summary.surface_plane_filtered_residues)),
+                ("Removed by surface plane", str(summary.removed_by_surface_plane_residues)),
+                ("Removed by general cutoff", str(summary.removed_by_general_cutoff_residues)),
+                ("Removed by forward ring", str(summary.removed_by_forward_ring_residues)),
+                ("Removed by reverse ring", str(summary.removed_by_reverse_ring_residues)),
+                ("Removed by any clash", str(summary.removed_by_any_clash_residues)),
+                ("Removed total", str(summary.removed_total_residues)),
+                ("Remaining", str(summary.remaining_residues)),
+            ],
+        )
+        for summary in report.residue_filter_summaries
+    )
     output = _format_value_lines(
         "Output",
         [
@@ -2705,6 +2906,7 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
         output_geometry,
         clash_filters,
         ring_checks,
+        residue_filter_details,
         density,
         "Probe details\n-------------\n" + probe_details,
         output,
@@ -2795,6 +2997,12 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     -------
     SlitFillReport
         Structured report for the completed workflow.
+
+    Notes
+    -----
+    Every cropped residue type is physically screened. ``target_resname``
+    selects only the density population and target-specific report fields. The
+    GRO, geometry YAML, and log are promoted together after all three succeed.
     """
 
     config = _resolve_fill_config(config)
@@ -2824,21 +3032,19 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
             guest_system=guest_system,
             translated_guest_coordinates=translated_guest_coordinates,
             selected_residue_mask=cropped_residue_mask,
-            target_resname=config.target_resname,
             slit_geometry=input_slit_geometry,
             padding_nm=config.surface_plane_padding_nm,
         )
         selected_residue_mask = surface_plane_selection.selected_residue_mask
         surface_plane_removed_mask = surface_plane_selection.removed_residue_mask
 
-    clash_selection, ring_check_cache = _identify_clashing_target_residues(
+    clash_selection, ring_check_cache = _identify_clashing_guest_residues(
         guest_system=guest_system,
         slit_system=slit_system,
         translated_guest_coordinates=translated_guest_coordinates,
         selected_residue_mask=selected_residue_mask,
         slit_coordinates=centered_slit_coordinates,
         final_box_lengths=final_box_lengths,
-        target_resname=config.target_resname,
         general_cutoff_nm=config.general_cutoff_nm,
         ring_atom_prefix=config.ring_atom_prefix,
         ring_plane_tolerance_nm=config.ring_plane_tolerance_nm,
@@ -2849,6 +3055,13 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         guest_system=guest_system,
         selected_residue_mask=selected_residue_mask,
         removed_residue_mask=clash_selection.removed_residue_mask,
+    )
+    residue_filter_summaries = _build_guest_filter_summaries(
+        guest_system=guest_system,
+        cropped_residue_mask=cropped_residue_mask,
+        selected_residue_mask=selected_residue_mask,
+        surface_plane_removed_mask=surface_plane_removed_mask,
+        clash_selection=clash_selection,
     )
 
     output_axis_permutation = _build_output_axis_permutation(
@@ -2875,14 +3088,11 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
             box_lengths=output_box_lengths,
         )
 
-    final_atom_count, final_residue_count = _write_merged_gro(
-        config=config,
-        slit_system=slit_system,
-        slit_coordinates=output_slit_coordinates,
-        guest_system=guest_system,
-        guest_coordinates=output_guest_coordinates,
-        kept_guest_mask=kept_guest_mask,
-        final_box_lengths=output_box_lengths,
+    final_atom_count = slit_system.atom_count + int(np.count_nonzero(kept_guest_mask))
+    final_residue_count = len(slit_system.residue_spans) + int(
+        np.count_nonzero(
+            selected_residue_mask & ~clash_selection.removed_residue_mask
+        )
     )
 
     target_residue_mask = np.array(
@@ -2947,6 +3157,7 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     )
 
     report = SlitFillReport(
+        residue_filter_summaries=residue_filter_summaries,
         initial_guest_molecules=initial_guest_molecules,
         cropped_guest_molecules=cropped_guest_molecules,
         removed_outside_crop_guest_molecules=removed_outside_crop_guest_molecules,
@@ -2969,8 +3180,9 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         removed_guest_molecules=removed_guest_molecules,
         remaining_guest_molecules=remaining_guest_molecules,
         slit_aromatic_ring_count=len(ring_check_cache.slit_ring_geometries),
-        cropped_guest_ring_count=len(ring_check_cache.target_ring_geometries),
-        guest_bonds_checked_per_molecule=len(ring_check_cache.target_bond_template),
+        cropped_guest_ring_count=len(ring_check_cache.guest_ring_geometries),
+        guest_bond_template_count=len(ring_check_cache.guest_bond_templates),
+        guest_bond_count_checked=len(ring_check_cache.guest_bond_geometries),
         slit_bond_template_count=len(ring_check_cache.slit_bond_templates),
         slit_bond_count_checked=len(ring_check_cache.slit_bond_geometries),
         density_estimate=density_estimate,
@@ -2983,13 +3195,35 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     )
 
     report_text = _build_fill_report_text(config, report)
-    _write_slit_geometry_metadata(
-        config.output_path.with_suffix(".yml"),
-        output_slit_geometry,
-        config.surface_plane_padding_nm,
-    )
     assert config.log_path is not None
-    config.log_path.write_text(report_text, encoding="utf-8")
+    metadata_path = config.output_path.with_suffix(".yml")
+    final_paths = (config.output_path, metadata_path, config.log_path)
+    with staged_output_paths(final_paths) as staging_paths:
+        staged_config = replace(
+            config,
+            output_path=staging_paths[config.output_path],
+            log_path=staging_paths[config.log_path],
+        )
+        written_atom_count, written_residue_count = _write_merged_gro(
+            config=staged_config,
+            slit_system=slit_system,
+            slit_coordinates=output_slit_coordinates,
+            guest_system=guest_system,
+            guest_coordinates=output_guest_coordinates,
+            kept_guest_mask=kept_guest_mask,
+            final_box_lengths=output_box_lengths,
+        )
+        if (written_atom_count, written_residue_count) != (
+            final_atom_count,
+            final_residue_count,
+        ):
+            raise RuntimeError("Staged GRO counts diverged from the fill report.")
+        _write_slit_geometry_metadata(
+            staging_paths[metadata_path],
+            output_slit_geometry,
+            config.surface_plane_padding_nm,
+        )
+        staging_paths[config.log_path].write_text(report_text, encoding="utf-8")
     return report
 
 
@@ -3062,8 +3296,8 @@ def _build_fill_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Center-crop a larger guest box to the slit cell, remove clashing "
-            "target molecules outside the detected slit planes or within a small "
-            "all-atom cutoff, then reject target residues involved in symmetric "
+            "guest molecules outside the detected slit planes or within a small "
+            "all-atom cutoff, then reject guest residues involved in symmetric "
             "aromatic-ring crossings."
         )
     )
@@ -3104,14 +3338,17 @@ def _build_fill_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target-resname",
         default=SlitFillConfig.target_resname,
-        help="Residue name that identifies removable guest molecules. Default: %(default)s",
+        help=(
+            "Residue name used for density and target-specific reporting; all "
+            "cropped residue types are physically filtered. Default: %(default)s"
+        ),
     )
     parser.add_argument(
         "--general-cutoff",
         type=float,
         default=SlitFillConfig.general_cutoff_nm,
         help=(
-            "All-atom clash cutoff in nm. Target residues with any atom closer "
+            "All-atom clash cutoff in nm. Guest residues with any atom closer "
             "than this distance to any slit atom are removed. The 0.10 nm "
             "default is deliberately permissive; 0.15 and 0.20 nm are useful "
             "progressively stricter starting points. Ring-crossing checks are "
@@ -3150,7 +3387,7 @@ def _build_fill_argument_parser() -> argparse.ArgumentParser:
         "--disable-surface-plane-filter",
         action="store_true",
         help=(
-            "Skip the automatic slit-plane filter that removes target residues "
+            "Skip the automatic slit-plane filter that removes guest residues "
             "outside the hydroxylated surface Si planes."
         ),
     )
@@ -3160,7 +3397,7 @@ def _build_fill_argument_parser() -> argparse.ArgumentParser:
         default=SlitFillConfig.surface_plane_padding_nm,
         help=(
             "Signed padding in nm applied on each side of the detected slit "
-            "interval before target selection. Positive values shrink the "
+            "interval before guest selection. Positive values shrink the "
             "allowed region; negative values expand it into the matrix. "
             "Default: %(default)s"
         ),

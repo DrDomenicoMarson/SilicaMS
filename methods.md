@@ -20,6 +20,61 @@ the central cuboid defining the slit. It then removes invalid or orphaned
 surface atoms, identifies exposed silicon sites, assigns flat-wall normals,
 and validates the remaining scaffold.
 
+### Bundled amorphous template
+
+The packaged `silicams/templates/amorph.gro` file contains 60,000 atoms:
+20,000 Si and 40,000 O atoms in a cubic 9.605 nm periodic box. Using atomic
+masses of 28.0855 u for Si and 15.999 u for O, this corresponds to a nominal
+bulk density of approximately 2.252 g cm^-3. The complete current file has
+SHA-256 checksum
+`f276b0a82a4e76f26d5a7657034195e97ac0563788fd90e39b4a64590ae02fe6`.
+
+The coordinate payload was introduced by
+[PoreMS commit `8d19b0393dd98482d86c60876dac5e53dfecb2e6`](https://github.com/PoreMS/PoreMS/commit/8d19b0393dd98482d86c60876dac5e53dfecb2e6)
+and released with [PoreMS 0.2.4](https://pypi.org/project/porems/0.2.4/) on
+21 December 2021. The inherited PoreMS source attributes the block to Vink
+and Barkema, *Large well-relaxed models of vitreous silica, coordination
+numbers, and entropy*, Physical Review B 67, 245201 (2003),
+<https://doi.org/10.1103/PhysRevB.67.245201>. Apart from the descriptive first
+line of the GRO file, the current SilicaMS template is byte-identical to that
+PoreMS artifact. Lines 2 onward have SHA-256 checksum
+`d2df315fb075d7a094c0fd84994535fe620b1888f4b0128c416f7f79dab2fd46`
+in both versions.
+
+The dimensions and density strongly associate the artifact with the
+60,000-atom vitreous-silica model described in Chapter 4 of R. L. C. Vink,
+*Computer Simulations of Amorphous Semiconductors*, Utrecht University (2002),
+<https://dspace.library.uu.nl/handle/1874/680>. That model was constructed from
+a periodic 20,000-atom amorphous-silicon continuous random network by placing
+oxygen atoms on the Si-Si bonds, scaling toward the experimental density,
+performing approximately one million attempted WWW-style bond transpositions
+with the Tu-Tersoff potential, and finally quenching with the BKS potential
+including volume optimization. The dissertation reports a final density of
+2.25 g cm^-3, mean O-Si-O and Si-O-Si angles of 109.4 and 151.2 degrees, and
+fully coordinated Si and O populations under a 1.80 Angstrom Si-O cutoff.
+
+The later journal article reports a related 60,000-atom network constrained to
+2.20 g cm^-3 without volume optimization during its final BKS quench. It is an
+appropriate source for the generation method and its validation against
+neutron-scattering data, but it does not by itself establish byte-level
+identity with this 9.605 nm coordinate file. No independently hosted copy or
+checksum of Vink's original coordinates has been located. The identification
+of the bundled artifact therefore rests on the explicit PoreMS attribution
+together with its matching atom count, composition, dimensions, and density.
+
+The original PoreMS docstring called the structure an "amorphous
+beta-cristobalite block." That label should not be interpreted as its
+generation history: Vink's dissertation describes an amorphous-silicon
+continuous-random-network backbone rather than a beta-cristobalite starting
+crystal. SilicaMS consequently refers to it as vitreous or amorphous silica.
+
+The GRO file stores coordinates and box dimensions, but not connectivity.
+PoreMS reconstructed Si-O bonds in the range 0.140-0.180 nm and then explicitly
+removed the pair `(57790, 2524)`. SilicaMS retains that range and pair as the
+default `amorph_bond_range_nm` and `template_split_pairs` processing choices.
+The reason for the exceptional split was not documented upstream, so it must
+not be represented as part of the published Vink coordinate model.
+
 The requested `Q2/Q3/Q4/T2/T3` fractions are interpreted over all active
 silicon atoms in the corresponding experimental population. The user must
 provide the physically justified fraction of those silicon atoms represented
@@ -85,16 +140,29 @@ consistent across formats.
 Bare exports must satisfy the silica charge and coordination identities.
 Functionalized topology exports additionally validate expected fragment
 charges and final neutrality. Connectivity validation supports `off`, `warn`,
-and `strict` modes.
+and `strict` modes; `strict` is the default for GRO, PDB, and mmCIF output.
+High-level slit output sets and GROMACS ITP/TOP pairs are rendered to staging
+paths and promoted only after every requested file succeeds. Existing files
+are restored after a handled promotion failure. This is process-level
+transaction safety, not a claim of portable multi-file power-loss atomicity.
 
 ## Slit filling and density
 
-The filling workflow selects complete guest residues from a larger reservoir,
-rejects general all-atom clashes and aromatic-ring crossings, and optionally
-requires every guest atom to lie inside a signed-padded mean-plane slit
-interval. Positive padding contracts both faces; negative padding expands the
-interval, but the validated padded width must remain positive and cannot
-exceed the periodic box length along the slit normal.
+The filling workflow selects complete guest residues from a larger reservoir.
+For every residue type in a mixed reservoir, it rejects general all-atom
+clashes, checks every inferred guest bond against slit aromatic rings, checks
+slit bonds against every guest ring containing the configured six aromatic
+atoms, and optionally requires every guest atom to lie inside a signed-padded
+mean-plane slit interval. Monatomic and non-aromatic residues skip only the
+bond or ring direction that is not physically applicable. `target_resname`
+selects the species used for density and target-specific metrics, while the
+report retains per-residue-name filtering outcomes. Positive padding contracts
+both faces; negative padding expands the interval, but the validated padded
+width must remain positive and cannot exceed the periodic box length along the
+slit normal.
+
+The merged GRO, geometry YAML, and report log are staged and promoted as one
+exception-safe output set.
 
 The general all-atom cutoff is also a construction heuristic. Its `0.10 nm`
 default is deliberately permissive; larger user-selected values remove more
@@ -122,5 +190,8 @@ pore volume.
 
 ## Lineage
 
-The amorphous silica construction methodology descends from PoreMS. See
-`NOTICE.md` and `CITATION.cff` for upstream attribution and citation details.
+The slit-construction workflow descends from PoreMS, while the bundled bulk
+amorphous coordinates are attributed through PoreMS to the Vink-Barkema
+vitreous-silica work described above. The PoreMS paper documents version 0.2.0,
+which implemented beta-cristobalite only; the amorphous builder was added later
+in PoreMS 0.2.4. See `NOTICE.md` and `CITATION.cff` for citation details.

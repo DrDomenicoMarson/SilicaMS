@@ -1,7 +1,8 @@
 cff-version: 1.2.0
 message: >-
   Cite the SilicaMS version used. When inherited silica-construction methods
-  are relevant, also cite the original PoreMS paper identified in this file.
+  are relevant, also cite the PoreMS framework paper and the Vink-Barkema
+  vitreous-silica reference identified in this file.
 title: SilicaMS
 type: software
 version: 0.5.0
@@ -40,3 +41,27 @@ references:
         given-names: Ulrich
       - family-names: Hansen
         given-names: Niels
+  - type: article
+    title: >-
+      Large well-relaxed models of vitreous silica, coordination numbers,
+      and entropy
+    doi: 10.1103/PhysRevB.67.245201
+    year: 2003
+    journal: Physical Review B
+    volume: 67
+    issue: 24
+    authors:
+      - family-names: Vink
+        given-names: R. L. C.
+      - family-names: Barkema
+        given-names: G. T.
+  - type: thesis
+    title: Computer Simulations of Amorphous Semiconductors
+    thesis-type: PhD thesis
+    year: 2002
+    url: https://dspace.library.uu.nl/handle/1874/680
+    institution:
+      name: Utrecht University
+    authors:
+      - family-names: Vink
+        given-names: R. L. C.

@@ -20,6 +20,8 @@ import yaml
 from tqdm.auto import tqdm as _tqdm_auto
 
 from . import geometry, utils
+from ._output_transaction import staged_output_directory
+from ._validation import boolean, finite_range, finite_real, integral
 from silicams.dice import Dice
 from silicams.matrix import Matrix
 from silicams.molecule import Molecule
@@ -69,6 +71,20 @@ class FunctionalizedSlitProgressConfig:
 
     enabled: bool | None = None
     leave: bool = False
+
+    def __post_init__(self):
+        """Validate the progress-display switches.
+
+        Raises
+        ------
+        TypeError
+            Raised when ``enabled`` is neither a boolean nor ``None``, or when
+            ``leave`` is not a boolean.
+        """
+
+        if self.enabled is not None:
+            boolean("enabled", self.enabled)
+        boolean("leave", self.leave)
 
 
 @dataclass
@@ -548,26 +564,78 @@ class AmorphousSlitConfig:
         Raises
         ------
         ValueError
-            Raised when the slit width, y repetition count, or temperature is
-            invalid.
+            Raised when a finite scientific value, range, count domain, seed,
+            or template split pair is invalid.
         TypeError
-            Raised when ``surface_target`` is not an
-            :class:`ExperimentalSiliconStateTarget`.
+            Raised when ``surface_target`` or any integer, range, or split-pair
+            field uses an unsupported type.
         """
         if not isinstance(self.surface_target, ExperimentalSiliconStateTarget):
             raise TypeError(
                 "surface_target must be an ExperimentalSiliconStateTarget instance."
             )
-        if self.slit_width_nm <= 0:
+        slit_width_nm = finite_real("slit_width_nm", self.slit_width_nm)
+        repeat_y = integral("repeat_y", self.repeat_y)
+        temperature_k = finite_real("temperature_k", self.temperature_k)
+        amorph_bond_range_nm = finite_range(
+            "amorph_bond_range_nm",
+            self.amorph_bond_range_nm,
+            positive=True,
+        )
+        siloxane_distance_range_nm = finite_range(
+            "siloxane_distance_range_nm",
+            self.siloxane_distance_range_nm,
+            positive=True,
+        )
+        surface_fraction_tolerance = finite_real(
+            "surface_fraction_tolerance",
+            self.surface_fraction_tolerance,
+        )
+        if slit_width_nm <= 0:
             raise ValueError("The slit width must be positive.")
-        if self.repeat_y < 1:
+        if repeat_y < 1:
             raise ValueError("The amorphous slit requires at least one y-repeat.")
-        if self.temperature_k <= 0:
+        if temperature_k <= 0:
             raise ValueError("The temperature must be positive.")
-        if self.surface_fraction_tolerance < 0:
+        if surface_fraction_tolerance < 0:
             raise ValueError("The surface fraction tolerance must be non-negative.")
-        if self.random_seed is not None and self.random_seed < 0:
-            raise ValueError("The random seed must be non-negative.")
+        random_seed = None
+        if self.random_seed is not None:
+            random_seed = integral("random_seed", self.random_seed)
+            if random_seed < 0:
+                raise ValueError("The random seed must be non-negative.")
+        if not isinstance(self.template_split_pairs, tuple):
+            raise TypeError("template_split_pairs must be a tuple.")
+        normalized_split_pairs = []
+        for pair in self.template_split_pairs:
+            if not isinstance(pair, tuple):
+                raise TypeError("Each template split pair must be a tuple.")
+            if len(pair) != 2:
+                raise ValueError("Each template split pair must contain two atom indices.")
+            atom_a = integral("template split atom index", pair[0])
+            atom_b = integral("template split atom index", pair[1])
+            if atom_a < 0 or atom_b < 0:
+                raise ValueError("Template split atom indices must be non-negative.")
+            if atom_a == atom_b:
+                raise ValueError("Template split atom indices must be distinct.")
+            normalized_split_pairs.append((atom_a, atom_b))
+
+        object.__setattr__(self, "slit_width_nm", slit_width_nm)
+        object.__setattr__(self, "repeat_y", repeat_y)
+        object.__setattr__(self, "temperature_k", temperature_k)
+        object.__setattr__(self, "amorph_bond_range_nm", amorph_bond_range_nm)
+        object.__setattr__(
+            self,
+            "siloxane_distance_range_nm",
+            siloxane_distance_range_nm,
+        )
+        object.__setattr__(
+            self,
+            "surface_fraction_tolerance",
+            surface_fraction_tolerance,
+        )
+        object.__setattr__(self, "random_seed", random_seed)
+        object.__setattr__(self, "template_split_pairs", tuple(normalized_split_pairs))
 
 
 @dataclass(frozen=True)
@@ -602,17 +670,22 @@ class SiliconStateComposition:
 
         Raises
         ------
+        TypeError
+            Raised when any population is not an integer.
         ValueError
             Raised when the counts are invalid or do not add up to the tracked
             surface silicon count.
         """
-        counts = (
-            self.total_surface_si,
-            self.q2_sites,
-            self.q3_sites,
-            self.q4_sites,
-            self.t2_sites,
-            self.t3_sites,
+        counts = tuple(
+            integral(name, value)
+            for name, value in (
+                ("total_surface_si", self.total_surface_si),
+                ("q2_sites", self.q2_sites),
+                ("q3_sites", self.q3_sites),
+                ("q4_sites", self.q4_sites),
+                ("t2_sites", self.t2_sites),
+                ("t3_sites", self.t3_sites),
+            )
         )
         if min(counts) < 0:
             raise ValueError("Silicon-state counts must be non-negative.")
@@ -625,6 +698,12 @@ class SiliconStateComposition:
             != self.total_surface_si
         ):
             raise ValueError("Silicon-state counts must add up to the total surface silicon count.")
+        for field_name, value in zip(
+            ("total_surface_si", "q2_sites", "q3_sites", "q4_sites", "t2_sites", "t3_sites"),
+            counts,
+            strict=True,
+        ):
+            object.__setattr__(self, field_name, value)
 
     @property
     def q2_fraction(self):
@@ -832,6 +911,31 @@ class GeminalMountDihedralSpec:
     function: int
     parameters: tuple[str, ...] = ()
 
+    def __post_init__(self):
+        """Validate one generated geminal dihedral specification.
+
+        Raises
+        ------
+        TypeError
+            Raised when names, function identifiers, or parameter tokens use
+            unsupported types.
+        ValueError
+            Raised when the atom name is empty or the function is not positive.
+        """
+
+        if not isinstance(self.fourth_atom_name, str):
+            raise TypeError("fourth_atom_name must be a string.")
+        if not self.fourth_atom_name:
+            raise ValueError("fourth_atom_name must not be empty.")
+        function = integral("function", self.function)
+        if function <= 0:
+            raise ValueError("function must be strictly positive.")
+        if not isinstance(self.parameters, tuple) or not all(
+            isinstance(parameter, str) for parameter in self.parameters
+        ):
+            raise TypeError("parameters must be a tuple of strings.")
+        object.__setattr__(self, "function", function)
+
 
 @dataclass(frozen=True)
 class SilaneGeminalCrossTerms:
@@ -933,6 +1037,42 @@ class SilaneAttachmentConfig:
     rotate_step_deg: float = 10.0
     topology: SilaneTopologyConfig | None = None
 
+    def __post_init__(self):
+        """Validate the ligand attachment geometry and scan settings.
+
+        Raises
+        ------
+        TypeError
+            Raised when the molecule, atom indices, switches, or nested
+            topology configuration use unsupported types.
+        ValueError
+            Raised when an atom index is out of range, the axis is degenerate,
+            or the rotation step is not finite and strictly positive.
+        """
+
+        if not isinstance(self.molecule, Molecule):
+            raise TypeError("molecule must be a Molecule instance.")
+        mount = integral("mount", self.mount)
+        if not isinstance(self.axis, tuple):
+            raise TypeError("axis must be a tuple.")
+        if len(self.axis) != 2:
+            raise ValueError("axis must contain exactly two atom indices.")
+        axis = (integral("axis atom index", self.axis[0]), integral("axis atom index", self.axis[1]))
+        atom_count = self.molecule.get_num()
+        if mount < 0 or mount >= atom_count or any(index < 0 or index >= atom_count for index in axis):
+            raise ValueError("Attachment atom indices must refer to atoms in molecule.")
+        if axis[0] == axis[1]:
+            raise ValueError("Attachment axis atom indices must be distinct.")
+        boolean("rotate_about_axis", self.rotate_about_axis)
+        rotate_step_deg = finite_real("rotate_step_deg", self.rotate_step_deg)
+        if rotate_step_deg <= 0.0:
+            raise ValueError("rotate_step_deg must be strictly positive.")
+        if self.topology is not None and not isinstance(self.topology, SilaneTopologyConfig):
+            raise TypeError("topology must be a SilaneTopologyConfig instance or None.")
+        object.__setattr__(self, "mount", mount)
+        object.__setattr__(self, "axis", axis)
+        object.__setattr__(self, "rotate_step_deg", rotate_step_deg)
+
 
 @dataclass(frozen=True)
 class FunctionalizedSlitStericConfig:
@@ -965,11 +1105,14 @@ class FunctionalizedSlitStericConfig:
             Raised when the steric clearance scale is not finite and strictly
             positive.
         """
-        if not math.isfinite(self.clearance_scale) or self.clearance_scale <= 0:
+        boolean("enabled", self.enabled)
+        clearance_scale = finite_real("clearance_scale", self.clearance_scale)
+        if clearance_scale <= 0:
             raise ValueError(
                 "The slit steric clearance scale must be finite and greater "
                 "than zero."
             )
+        object.__setattr__(self, "clearance_scale", clearance_scale)
 
 
 @dataclass(frozen=True)
@@ -3073,7 +3216,7 @@ def write_bare_amorphous_slit(
     write_pdb_conect=True,
     write_cif=False,
     write_cif_bonds=True,
-    validate_connectivity="warn",
+    validate_connectivity="strict",
 ):
     """Prepare, finalize, and store a bare amorphous silica slit.
 
@@ -3101,7 +3244,8 @@ def write_bare_amorphous_slit(
         is requested.
     validate_connectivity : str, optional
         Connectivity validation mode forwarded to structure writers.
-        Supported values are ``"off"``, ``"warn"``, and ``"strict"``.
+        Supported values are ``"off"``, ``"warn"``, and ``"strict"``. The
+        default is ``"strict"``.
 
     Returns
     -------
@@ -3147,13 +3291,14 @@ def _write_prepared_bare_result(
     write_pdb_conect=True,
     write_cif=False,
     write_cif_bonds=True,
-    validate_connectivity="warn",
+    validate_connectivity="strict",
 ):
     """Finalize and export an already prepared bare slit result.
 
     This internal boundary lets tests and higher-level workflows separate the
     expensive scientific preparation stage from deterministic serialization.
-    The supplied result is finalized in place and returned.
+    The supplied result is finalized in place and returned. All requested files
+    are staged and promoted together after serialization succeeds.
 
     Parameters
     ----------
@@ -3172,7 +3317,8 @@ def _write_prepared_bare_result(
     write_cif_bonds : bool, optional
         Whether mmCIF output includes ``_struct_conn`` rows.
     validate_connectivity : str, optional
-        Connectivity-validation mode forwarded to coordinate writers.
+        Connectivity-validation mode forwarded to coordinate writers. The
+        default is ``"strict"``.
 
     Returns
     -------
@@ -3181,27 +3327,28 @@ def _write_prepared_bare_result(
     """
 
     result.system.finalize()
-    snapshot = _write_slit_structure_outputs(
-        result.system,
-        output_dir,
-        write_object_files,
-        write_pdb,
-        write_pdb_conect,
-        write_cif,
-        write_cif_bonds,
-        validate_connectivity,
-    )
-    topology_writer = GromacsTopologyWriter(snapshot, output_dir)
-    result.bare_charge_diagnostics = topology_writer.bare_charge_diagnostics(
-        silica_topology=result.silica_topology,
-    )
-    topology_writer.write_full_slit(
-        silica_topology=result.silica_topology,
-    )
+    with staged_output_directory(output_dir) as staged_output_dir:
+        snapshot = _write_slit_structure_outputs(
+            result.system,
+            staged_output_dir,
+            write_object_files,
+            write_pdb,
+            write_pdb_conect,
+            write_cif,
+            write_cif_bonds,
+            validate_connectivity,
+        )
+        topology_writer = GromacsTopologyWriter(snapshot, staged_output_dir)
+        result.bare_charge_diagnostics = topology_writer.bare_charge_diagnostics(
+            silica_topology=result.silica_topology,
+        )
+        topology_writer.write_full_slit(
+            silica_topology=result.silica_topology,
+        )
 
-    report_path = os.path.join(output_dir, f"{result.report.name}_report.json")
-    with open(report_path, "w") as file_out:
-        json.dump(asdict(result.report), file_out, indent=2)
+        report_path = staged_output_dir / f"{result.report.name}_report.json"
+        with open(report_path, "w") as file_out:
+            json.dump(asdict(result.report), file_out, indent=2)
 
     return result
 
@@ -3214,7 +3361,7 @@ def write_functionalized_amorphous_slit(
     write_pdb_conect=True,
     write_cif=False,
     write_cif_bonds=True,
-    validate_connectivity="warn",
+    validate_connectivity="strict",
 ):
     """Prepare, finalize, and store a functionalized amorphous silica slit.
 
@@ -3241,7 +3388,8 @@ def write_functionalized_amorphous_slit(
         is requested.
     validate_connectivity : str, optional
         Connectivity validation mode forwarded to structure writers.
-        Supported values are ``"off"``, ``"warn"``, and ``"strict"``.
+        Supported values are ``"off"``, ``"warn"``, and ``"strict"``. The
+        default is ``"strict"``.
 
     Returns
     -------
@@ -3372,14 +3520,15 @@ def _write_prepared_functionalized_result(
     write_pdb_conect=True,
     write_cif=False,
     write_cif_bonds=True,
-    validate_connectivity="warn",
+    validate_connectivity="strict",
 ):
     """Finalize and export an already prepared functionalized slit result.
 
     This internal boundary separates expensive surface realization from
     deterministic finalization and serialization. The supplied result is
     finalized in place and returned. The caller owns the progress tracker's
-    lifecycle.
+    lifecycle. All requested files are staged and promoted together after
+    serialization succeeds.
 
     Parameters
     ----------
@@ -3402,7 +3551,8 @@ def _write_prepared_functionalized_result(
     write_cif_bonds : bool, optional
         Whether mmCIF output includes ``_struct_conn`` rows.
     validate_connectivity : str, optional
-        Connectivity-validation mode forwarded to coordinate writers.
+        Connectivity-validation mode forwarded to coordinate writers. The
+        default is ``"strict"``.
 
     Returns
     -------
@@ -3410,7 +3560,6 @@ def _write_prepared_functionalized_result(
         Finalized result with timing and charge diagnostics populated.
     """
 
-    utils.mkdirp(output_dir)
     topology_config = resolve_silane_topology_config(config.ligand)
 
     progress_tracker.set_stage("Finalize")
@@ -3420,39 +3569,40 @@ def _write_prepared_functionalized_result(
     progress_tracker.update_stage(1)
 
     progress_tracker.set_stage("Finalize/export")
-    export_start = perf_counter()
-    snapshot = _write_slit_structure_outputs(
-        result.system,
-        output_dir,
-        write_object_files,
-        write_pdb,
-        write_pdb_conect,
-        write_cif,
-        write_cif_bonds,
-        validate_connectivity,
-    )
-    if topology_config is not None:
-        result.charge_diagnostics = GromacsTopologyWriter(
-            snapshot,
-            output_dir,
-        ).write_full_slit(
-            base_ligand_short=config.ligand.molecule.get_short(),
-            silane_topology_config=topology_config,
-            silica_topology=result.silica_topology,
+    with staged_output_directory(output_dir) as staged_output_dir:
+        export_start = perf_counter()
+        snapshot = _write_slit_structure_outputs(
+            result.system,
+            staged_output_dir,
+            write_object_files,
+            write_pdb,
+            write_pdb_conect,
+            write_cif,
+            write_cif_bonds,
+            validate_connectivity,
         )
-    export_s = perf_counter() - export_start
-    progress_tracker.update_stage(1)
-    result.report = replace(
-        result.report,
-        timing_summary=replace(
-            result.report.timing_summary,
-            finalize_s=finalize_s,
-            export_s=export_s,
-        ),
-    )
+        if topology_config is not None:
+            result.charge_diagnostics = GromacsTopologyWriter(
+                snapshot,
+                staged_output_dir,
+            ).write_full_slit(
+                base_ligand_short=config.ligand.molecule.get_short(),
+                silane_topology_config=topology_config,
+                silica_topology=result.silica_topology,
+            )
+        export_s = perf_counter() - export_start
+        progress_tracker.update_stage(1)
+        result.report = replace(
+            result.report,
+            timing_summary=replace(
+                result.report.timing_summary,
+                finalize_s=finalize_s,
+                export_s=export_s,
+            ),
+        )
 
-    report_path = os.path.join(output_dir, f"{result.report.name}_report.json")
-    with open(report_path, "w") as file_out:
-        json.dump(asdict(result.report), file_out, indent=2)
+        report_path = staged_output_dir / f"{result.report.name}_report.json"
+        with open(report_path, "w") as file_out:
+            json.dump(asdict(result.report), file_out, indent=2)
 
     return result

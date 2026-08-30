@@ -54,6 +54,95 @@ def test_topology_parameter_helpers_are_exported_from_package_root():
     assert sms.GromacsBondParameters is topo_mod.GromacsBondParameters
 
 
+def test_structure_and_slit_exports_are_connectivity_strict_by_default():
+    """Keep invalid assembled chemistry from being exported implicitly."""
+
+    for writer_method in (
+        sms.StructureWriter.write_gro,
+        sms.StructureWriter.write_pdb,
+        sms.StructureWriter.write_cif,
+        sms.write_bare_amorphous_slit,
+        sms.write_functionalized_amorphous_slit,
+    ):
+        assert (
+            inspect.signature(writer_method).parameters["validate_connectivity"].default
+            == "strict"
+        )
+
+
+def _validation_surface_target():
+    """Return one compact physically valid target for configuration tests."""
+
+    return sms.ExperimentalSiliconStateTarget(
+        q2_fraction=0.05,
+        q3_fraction=0.25,
+        surface_silicon_fraction=0.50,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("slit_width_nm", np.nan),
+        ("temperature_k", np.inf),
+        ("surface_fraction_tolerance", np.nan),
+        ("amorph_bond_range_nm", (0.14, np.nan)),
+        ("siloxane_distance_range_nm", (0.65, 0.40)),
+    ),
+)
+def test_amorphous_slit_config_rejects_invalid_real_fields(field_name, value):
+    """Reject non-finite or physically invalid real-valued slit settings."""
+
+    with pytest.raises(ValueError):
+        sms.AmorphousSlitConfig(
+            surface_target=_validation_surface_target(),
+            **{field_name: value},
+        )
+
+
+@pytest.mark.parametrize("field_name", ("repeat_y", "random_seed"))
+@pytest.mark.parametrize("value", (1.5, True))
+def test_amorphous_slit_config_requires_actual_integer_fields(field_name, value):
+    """Reject floats and booleans for integer-valued slit settings."""
+
+    with pytest.raises(TypeError, match="integer"):
+        sms.AmorphousSlitConfig(
+            surface_target=_validation_surface_target(),
+            **{field_name: value},
+        )
+
+
+def test_amorphous_slit_config_normalizes_numpy_integers():
+    """Accept NumPy integral values and normalize them to Python integers."""
+
+    config = sms.AmorphousSlitConfig(
+        surface_target=_validation_surface_target(),
+        repeat_y=np.int64(1),
+        random_seed=np.int64(7),
+        template_split_pairs=((np.int64(10), np.int64(11)),),
+    )
+
+    assert type(config.repeat_y) is int
+    assert type(config.random_seed) is int
+    assert config.template_split_pairs == ((10, 11),)
+
+
+@pytest.mark.parametrize("value", (1.5, True))
+def test_silicon_state_composition_requires_integer_counts(value):
+    """Reject non-integer silicon-state population counts."""
+
+    with pytest.raises(TypeError, match="integer"):
+        sms.SiliconStateComposition(value, value, 0, 0)
+
+
+@pytest.mark.parametrize("function", (1.5, True))
+def test_geminal_dihedral_function_requires_an_integer(function):
+    """Reject non-integer GROMACS dihedral function identifiers."""
+
+    with pytest.raises(TypeError, match="integer"):
+        sms.GeminalMountDihedralSpec("C1", function)
+
+
 @pytest.mark.parametrize(
     "symbol",
     (
@@ -463,7 +552,7 @@ def export_shared_functionalized_result(
     write_pdb_conect=True,
     write_cif=False,
     write_cif_bonds=True,
-    validate_connectivity="warn",
+    validate_connectivity="strict",
 ):
     """Export an independent clone of the shared functionalized result.
 
@@ -1364,6 +1453,47 @@ class TestStoredAmorphousSlit:
 
 @pytest.mark.xdist_group("small_bare")
 class TestStoredSlitFormats:
+    def test_bare_export_failure_preserves_existing_output_set(
+        self,
+        tmp_path,
+        monkeypatch,
+        small_bare_slit_context,
+    ):
+        """Keep prior slit files when topology generation fails after staging."""
+
+        output_dir = tmp_path / "transactional_bare"
+        output_dir.mkdir()
+        name = small_bare_slit_context.config.name
+        gro_path = output_dir / f"{name}.gro"
+        report_path = output_dir / f"{name}_report.json"
+        gro_path.write_text("old gro", encoding="utf-8")
+        report_path.write_text("old report", encoding="utf-8")
+
+        def fail_topology(*args, **kwargs):
+            """Inject a failure after coordinate and metadata staging."""
+
+            raise RuntimeError("injected topology failure")
+
+        monkeypatch.setattr(
+            slit_mod.GromacsTopologyWriter,
+            "write_full_slit",
+            fail_topology,
+        )
+
+        with pytest.raises(RuntimeError, match="injected topology failure"):
+            slit_mod._write_prepared_bare_result(
+                result=small_bare_slit_context.clone_result(),
+                output_dir=output_dir,
+                validate_connectivity="strict",
+            )
+
+        assert gro_path.read_text(encoding="utf-8") == "old gro"
+        assert report_path.read_text(encoding="utf-8") == "old report"
+        assert sorted(path.name for path in output_dir.iterdir()) == [
+            f"{name}.gro",
+            f"{name}_report.json",
+        ]
+
     def test_shared_snapshot_contains_final_ordering_and_connectivity(
         self,
         small_bare_slit_context,
@@ -1505,7 +1635,7 @@ class TestStoredSlitFormats:
             write_pdb_conect=True,
             write_cif=False,
             write_cif_bonds=True,
-            validate_connectivity="warn",
+            validate_connectivity="strict",
         )
 
         name = small_bare_slit_context.config.name
@@ -1539,7 +1669,7 @@ class TestStoredSlitFormats:
             write_pdb_conect=True,
             write_cif=False,
             write_cif_bonds=True,
-            validate_connectivity="warn",
+            validate_connectivity="strict",
         )
 
         pdb_path = output_dir / f"{small_bare_slit_context.config.name}.pdb"
@@ -1569,7 +1699,7 @@ class TestStoredSlitFormats:
             write_pdb_conect=True,
             write_cif=True,
             write_cif_bonds=True,
-            validate_connectivity="warn",
+            validate_connectivity="strict",
         )
 
         cif_path = output_dir / f"{small_bare_slit_context.config.name}.cif"
@@ -1712,8 +1842,32 @@ class TestFunctionalizedAmorphousSlit:
         self,
         clearance_scale,
     ):
-        with pytest.raises(ValueError, match="finite and greater than zero"):
+        with pytest.raises(ValueError, match="finite|greater than zero"):
             sms.FunctionalizedSlitStericConfig(clearance_scale=clearance_scale)
+
+    @pytest.mark.parametrize("rotate_step_deg", (np.nan, np.inf, 0.0, -1.0))
+    def test_silane_attachment_rotation_step_must_be_finite_and_positive(
+        self,
+        rotate_step_deg,
+    ):
+        """Reject scan steps that could fail or never terminate."""
+
+        with pytest.raises(ValueError, match="finite|strictly positive"):
+            sms.SilaneAttachmentConfig(
+                molecule=generic.tms(),
+                mount=0,
+                axis=(0, 1),
+                rotate_step_deg=rotate_step_deg,
+            )
+
+    @pytest.mark.parametrize("field_name", ("mount", "axis"))
+    def test_silane_attachment_requires_integer_atom_indices(self, field_name):
+        """Reject non-integer ligand atom identifiers."""
+
+        kwargs = {"mount": 0, "axis": (0, 1)}
+        kwargs[field_name] = 1.5 if field_name == "mount" else (0, 1.5)
+        with pytest.raises(TypeError, match="integer"):
+            sms.SilaneAttachmentConfig(molecule=generic.tms(), **kwargs)
 
     def test_functionalized_progress_config_defaults_to_auto_quiet_leave_false(self):
         progress = sms.FunctionalizedSlitProgressConfig()

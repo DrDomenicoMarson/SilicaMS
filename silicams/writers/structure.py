@@ -1167,7 +1167,7 @@ class StructureWriter:
         name="",
         use_atom_names=False,
         write_bonds=True,
-        validate_connectivity="warn",
+        validate_connectivity="strict",
     ):
         """Write the current structure in mmCIF format.
 
@@ -1188,7 +1188,7 @@ class StructureWriter:
             reference declared rows.
         validate_connectivity : str, optional
             Connectivity validation mode: ``"off"``, ``"warn"``, or
-            ``"strict"``. The default warns on invalid assembled local
+            ``"strict"``. The default rejects invalid assembled local
             chemistry before writing the file. Internal siloxane bridge
             residues are serialized as exported ``OM`` bridging oxygens.
         """
@@ -1279,7 +1279,7 @@ class StructureWriter:
         name="",
         use_atom_names=False,
         write_conect=True,
-        validate_connectivity="warn",
+        validate_connectivity="strict",
     ):
         """Write the current structure in PDB format.
 
@@ -1300,7 +1300,7 @@ class StructureWriter:
             ``CRYST1`` record is emitted when periodic box lengths are known.
         validate_connectivity : str, optional
             Connectivity validation mode: ``"off"``, ``"warn"``, or
-            ``"strict"``. The default warns on invalid assembled local
+            ``"strict"``. The default rejects invalid assembled local
             chemistry before writing the file. Internal siloxane bridge
             residues are serialized as exported ``OM`` bridging oxygens.
         """
@@ -1362,7 +1362,7 @@ class StructureWriter:
             # End statement
             file_out.write("TER\nEND\n")
 
-    def write_gro(self, name="", use_atom_names=False, validate_connectivity="warn"):
+    def write_gro(self, name="", use_atom_names=False, validate_connectivity="strict"):
         """Write the current structure in GROMACS GRO format.
 
         Parameters
@@ -1374,7 +1374,7 @@ class StructureWriter:
             enumerate atom names from atom types.
         validate_connectivity : str, optional
             Connectivity validation mode: ``"off"``, ``"warn"``, or
-            ``"strict"``. The default warns on invalid assembled local
+            ``"strict"``. The default rejects invalid assembled local
             chemistry before writing the file. Internal siloxane bridge
             residues are serialized as exported ``OM`` bridging oxygens.
         """

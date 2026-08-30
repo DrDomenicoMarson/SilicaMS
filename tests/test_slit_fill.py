@@ -16,8 +16,74 @@ from silicams import PeriodicSlitGeometry
 def test_general_cutoff_must_be_finite_and_positive(general_cutoff_nm: float) -> None:
     """Reject non-physical all-atom construction cutoffs."""
 
-    with pytest.raises(ValueError, match="finite and strictly positive"):
+    with pytest.raises(ValueError, match="finite|strictly positive"):
         slit_fill_mod.SlitFillConfig(general_cutoff_nm=general_cutoff_nm)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("ring_plane_tolerance_nm", np.nan),
+        ("ring_polygon_padding_nm", np.inf),
+        ("density_probe_radii_nm", (np.nan,)),
+    ),
+)
+def test_fill_config_rejects_non_finite_scientific_values(
+    field_name: str,
+    value: object,
+) -> None:
+    """Reject non-finite tolerances, paddings, and density probe radii."""
+
+    with pytest.raises(ValueError, match="finite"):
+        slit_fill_mod.SlitFillConfig(**{field_name: value})
+
+
+@pytest.mark.parametrize(
+    ("config_type", "field_name"),
+    (
+        (slit_fill_mod.SlitFillConfig, "density_sample_count"),
+        (slit_fill_mod.SlitFillConfig, "density_seed_count"),
+        (slit_fill_mod.SlitFillConfig, "random_seed"),
+        (slit_fill_mod.SlitDensityConfig, "density_sample_count"),
+        (slit_fill_mod.SlitDensityConfig, "density_seed_count"),
+        (slit_fill_mod.SlitDensityConfig, "random_seed"),
+    ),
+)
+@pytest.mark.parametrize("value", (1.5, True))
+def test_fill_and_density_configs_require_actual_integer_fields(
+    config_type: type,
+    field_name: str,
+    value: object,
+) -> None:
+    """Reject floats and booleans for integer counts and seeds."""
+
+    with pytest.raises(TypeError, match="integer"):
+        config_type(**{field_name: value})
+
+
+def test_fill_config_normalizes_numpy_integer_fields() -> None:
+    """Accept NumPy integral values while storing ordinary Python integers."""
+
+    config = slit_fill_mod.SlitFillConfig(
+        density_sample_count=np.int64(10),
+        density_seed_count=np.int64(2),
+        random_seed=np.int64(3),
+    )
+
+    assert type(config.density_sample_count) is int
+    assert type(config.density_seed_count) is int
+    assert type(config.random_seed) is int
+
+
+def test_fill_paths_must_be_distinct() -> None:
+    """Reject a report path that would overwrite another member of the set."""
+
+    config = slit_fill_mod.SlitFillConfig(
+        output_path=Path("filled.gro"),
+        log_path=Path("filled.yml"),
+    )
+    with pytest.raises(ValueError, match="must be distinct"):
+        slit_fill_mod._resolve_fill_config(config)
 
 
 def _gro_atom_line(
@@ -221,7 +287,7 @@ def test_infer_slit_geometry_detects_x_axis(module_workspace) -> None:
 
 
 def test_identify_clashes_detects_forward_ring_crossing(module_workspace) -> None:
-    """A target bond through a slit aromatic ring should trigger the forward mask."""
+    """A guest bond through a slit aromatic ring should trigger the forward mask."""
 
     slit_path = module_workspace.root / "slit_forward.gro"
     guest_path = module_workspace.root / "guest_forward.gro"
@@ -235,14 +301,13 @@ def test_identify_clashes_detects_forward_ring_crossing(module_workspace) -> Non
 
     slit_system = slit_fill_mod._load_gro_system(slit_path)
     guest_system = slit_fill_mod._load_gro_system(guest_path)
-    clash_selection, _ = slit_fill_mod._identify_clashing_target_residues(
+    clash_selection, _ = slit_fill_mod._identify_clashing_guest_residues(
         guest_system=guest_system,
         slit_system=slit_system,
         translated_guest_coordinates=guest_system.coordinates.copy(),
         selected_residue_mask=np.array([True], dtype=bool),
         slit_coordinates=slit_system.coordinates.copy(),
         final_box_lengths=np.array([3.0, 3.0, 3.0], dtype=float),
-        target_resname="THY",
         general_cutoff_nm=0.05,
         ring_atom_prefix="CA",
         ring_plane_tolerance_nm=0.04,
@@ -255,7 +320,7 @@ def test_identify_clashes_detects_forward_ring_crossing(module_workspace) -> Non
 
 
 def test_identify_clashes_detects_reverse_ring_crossing(module_workspace) -> None:
-    """A slit bond through a target aromatic ring should trigger the reverse mask."""
+    """A slit bond through a guest aromatic ring should trigger the reverse mask."""
 
     slit_path = module_workspace.root / "slit_reverse.gro"
     guest_path = module_workspace.root / "guest_reverse.gro"
@@ -269,14 +334,13 @@ def test_identify_clashes_detects_reverse_ring_crossing(module_workspace) -> Non
 
     slit_system = slit_fill_mod._load_gro_system(slit_path)
     guest_system = slit_fill_mod._load_gro_system(guest_path)
-    clash_selection, _ = slit_fill_mod._identify_clashing_target_residues(
+    clash_selection, _ = slit_fill_mod._identify_clashing_guest_residues(
         guest_system=guest_system,
         slit_system=slit_system,
         translated_guest_coordinates=guest_system.coordinates.copy(),
         selected_residue_mask=np.array([True], dtype=bool),
         slit_coordinates=slit_system.coordinates.copy(),
         final_box_lengths=np.array([3.0, 3.0, 3.0], dtype=float),
-        target_resname="THY",
         general_cutoff_nm=0.05,
         ring_atom_prefix="CA",
         ring_plane_tolerance_nm=0.04,
@@ -286,6 +350,42 @@ def test_identify_clashes_detects_reverse_ring_crossing(module_workspace) -> Non
 
     assert clash_selection.removed_by_forward_ring_mask.tolist() == [False]
     assert clash_selection.removed_by_reverse_ring_mask.tolist() == [True]
+
+
+def test_guest_with_only_excluded_hydrogen_bonds_is_supported(module_workspace) -> None:
+    """Allow water-like guests when hydrogen bonds are omitted from ring checks."""
+
+    slit_path = module_workspace.root / "slit_water.gro"
+    guest_path = module_workspace.root / "guest_water.gro"
+    _write_basic_slit(slit_path)
+    _write_gro(
+        guest_path,
+        [
+            (1, "SOL", "OW", 1, 1.0, 1.0, 1.0),
+            (1, "SOL", "HW1", 2, 1.096, 1.0, 1.0),
+            (1, "SOL", "HW2", 3, 0.968, 1.091, 1.0),
+        ],
+        (2.0, 2.0, 2.0),
+    )
+    slit_system = slit_fill_mod._load_gro_system(slit_path)
+    guest_system = slit_fill_mod._load_gro_system(guest_path)
+
+    selection, cache = slit_fill_mod._identify_clashing_guest_residues(
+        guest_system=guest_system,
+        slit_system=slit_system,
+        translated_guest_coordinates=guest_system.coordinates.copy(),
+        selected_residue_mask=np.array([True], dtype=bool),
+        slit_coordinates=slit_system.coordinates.copy(),
+        final_box_lengths=np.array([2.0, 2.0, 2.0]),
+        general_cutoff_nm=0.05,
+        ring_atom_prefix="CA",
+        ring_plane_tolerance_nm=0.04,
+        ring_polygon_padding_nm=0.02,
+        include_hydrogen_bonds_in_ring_check=False,
+    )
+
+    assert not selection.removed_residue_mask[0]
+    assert cache.guest_bond_geometries == ()
 
 
 def test_fill_slit_writes_merged_gro_and_human_report(module_workspace, capsys) -> None:
@@ -342,6 +442,99 @@ def test_fill_slit_writes_merged_gro_and_human_report(module_workspace, capsys) 
     assert "Output" in log_text
     assert "General cutoff" in log_text
     assert "0.100 nm" in log_text
+
+
+def test_fill_slit_filters_every_residue_type_and_reports_each_one(
+    module_workspace,
+) -> None:
+    """Screen mixed reservoirs while keeping density reporting target-specific."""
+
+    guest_path = module_workspace.root / "guest_mixed.gro"
+    slit_path = module_workspace.root / "slit_mixed.gro"
+    output_path = module_workspace.root / "merged_mixed.gro"
+    target_atoms = _ring_residue(1, "THY", 1, (1.5, 1.5, 1.5))
+    mixed_atoms = target_atoms + [
+        (2, "NA", "NA", 7, 0.75, 1.00, 1.00),
+        (3, "CL", "CL", 8, 0.60, 1.20, 1.20),
+        (4, "K", "K", 9, 1.30, 1.30, 1.30),
+    ]
+    _write_gro(guest_path, mixed_atoms, (3.0, 3.0, 3.0), title="mixed guest")
+    _write_basic_slit(slit_path)
+
+    report = slit_fill_mod.fill_slit(
+        slit_fill_mod.SlitFillConfig(
+            guest_path=guest_path,
+            slit_path=slit_path,
+            output_path=output_path,
+            density_probe_radii_nm=(0.0,),
+            density_sample_count=100,
+            density_seed_count=1,
+            random_seed=9,
+        )
+    )
+
+    summaries = {
+        summary.residue_name: summary for summary in report.residue_filter_summaries
+    }
+    output_system = slit_fill_mod._load_gro_system(output_path)
+
+    assert summaries["NA"].removed_by_general_cutoff_residues == 1
+    assert summaries["CL"].removed_by_surface_plane_residues == 1
+    assert summaries["K"].remaining_residues == 1
+    assert summaries["THY"].remaining_residues == 1
+    assert report.remaining_guest_molecules == 1
+    assert set(output_system.residue_names) == {"SUR", "THY", "K"}
+    assert "Residue filtering: NA" in output_path.with_suffix(".log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_fill_slit_late_failure_preserves_existing_output_set(
+    module_workspace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep prior GRO, metadata, and log files when staged metadata writing fails."""
+
+    guest_path = module_workspace.root / "guest_transaction.gro"
+    slit_path = module_workspace.root / "slit_transaction.gro"
+    output_path = module_workspace.root / "merged_transaction.gro"
+    metadata_path = output_path.with_suffix(".yml")
+    log_path = output_path.with_suffix(".log")
+    _write_guest_box(guest_path, include_outside_ring=False)
+    _write_basic_slit(slit_path)
+    output_path.write_text("old gro", encoding="utf-8")
+    metadata_path.write_text("old metadata", encoding="utf-8")
+    log_path.write_text("old log", encoding="utf-8")
+
+    def fail_metadata_write(*args, **kwargs):
+        """Inject a failure after the merged GRO has been staged."""
+
+        raise RuntimeError("injected metadata failure")
+
+    monkeypatch.setattr(
+        slit_fill_mod,
+        "_write_slit_geometry_metadata",
+        fail_metadata_write,
+    )
+
+    with pytest.raises(RuntimeError, match="injected metadata failure"):
+        slit_fill_mod.fill_slit(
+            slit_fill_mod.SlitFillConfig(
+                guest_path=guest_path,
+                slit_path=slit_path,
+                output_path=output_path,
+                log_path=log_path,
+                density_probe_radii_nm=(0.0,),
+                density_sample_count=100,
+                density_seed_count=1,
+                random_seed=5,
+            )
+        )
+
+    assert output_path.read_text(encoding="utf-8") == "old gro"
+    assert metadata_path.read_text(encoding="utf-8") == "old metadata"
+    assert log_path.read_text(encoding="utf-8") == "old log"
+    assert not list(module_workspace.root.glob("*.silicams-stage-*"))
 
 
 def test_density_analysis_is_reproducible_and_cli_helpers_accept_argv(
@@ -496,22 +689,28 @@ def test_fill_slit_raises_for_non_orthorhombic_box(module_workspace) -> None:
         )
 
 
-def test_fill_slit_raises_when_target_ring_is_missing(module_workspace) -> None:
-    """Ring checks require exactly six aromatic atoms on the target residue."""
+def test_fill_slit_allows_non_aromatic_target_residues(module_workspace) -> None:
+    """Skip reverse ring checks when a target has no complete aromatic ring."""
 
     guest_path = module_workspace.root / "guest_missing_ring.gro"
     slit_path = module_workspace.root / "slit_missing_ring.gro"
     _write_guest_box(guest_path, include_outside_ring=False, ring_atom_count=5)
     _write_basic_slit(slit_path)
 
-    with pytest.raises(ValueError, match="does not contain exactly six atoms"):
-        slit_fill_mod.fill_slit(
-            slit_fill_mod.SlitFillConfig(
-                guest_path=guest_path,
-                slit_path=slit_path,
-                output_path=module_workspace.root / "unused_missing_ring.gro",
-            )
+    report = slit_fill_mod.fill_slit(
+        slit_fill_mod.SlitFillConfig(
+            guest_path=guest_path,
+            slit_path=slit_path,
+            output_path=module_workspace.root / "merged_missing_ring.gro",
+            density_sample_count=100,
+            density_seed_count=1,
+            density_probe_radii_nm=(0.0,),
+            random_seed=4,
         )
+    )
+
+    assert report.cropped_guest_ring_count == 0
+    assert report.remaining_guest_molecules == 1
 
 
 def test_density_analysis_raises_without_framework(module_workspace) -> None:

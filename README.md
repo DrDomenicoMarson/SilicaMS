@@ -149,6 +149,24 @@ slit volume, surface support count, and normal RMS roughness. Construction
 writes this unit-explicit schema-v1 geometry to `<system_name>.yml`; filling
 writes the output-frame geometry to `<output_stem>.yml`.
 
+Filling supports mixed guest reservoirs. Cropping, surface-plane filtering,
+the general all-atom cutoff, and applicable ring-crossing checks are applied
+to every residue type. `target_resname` selects only the species used for
+density calculations and the target-specific summary fields; the structured
+report also includes per-residue-name filtering counts for the complete
+mixture. Monatomic and non-aromatic residues skip only the bond or ring check
+that is physically inapplicable.
+
+Numeric configuration values are validated before construction: NaN and
+infinite values are rejected, and counts, indices, repetitions, and seeds must
+be actual integers rather than integer-valued floats or booleans.
+
+GRO, PDB, and mmCIF writers validate connectivity in `strict` mode by default.
+Invalid assembled chemistry therefore prevents output unless the caller
+explicitly selects `warn` or `off`. Core multi-file slit and filling exports
+are staged and promoted as a set; a handled late failure preserves the prior
+complete output set rather than leaving partial new files.
+
 Pass geometry explicitly with `slit_geometry=` in Python or
 `--slit-geometry PATH` on the command line. If neither an object nor a path is
 provided, geometry is inferred from hydroxylated surface Si atoms. Neighboring
@@ -232,9 +250,25 @@ The inherited construction methods should continue to acknowledge:
 > Simulation 47 (2021), 306–316.
 > [doi:10.1080/08927022.2020.1871478](https://doi.org/10.1080/08927022.2020.1871478)
 
+The bundled 60,000-atom amorphous template was added after that paper, in
+[PoreMS 0.2.4](https://pypi.org/project/porems/0.2.4/). The original PoreMS
+source attributes its 9.605 nm cubic block to
+Vink and Barkema's vitreous-silica work. Its 20,000 Si and 40,000 O atoms give
+a nominal density of approximately 2.252 g cm^-3, closely matching the 2.25
+g cm^-3 model described in
+[Vink's 2002 dissertation](https://dspace.library.uu.nl/handle/1874/680).
+The related peer-reviewed method and validation are reported in
+[Vink and Barkema, Physical Review B 67, 245201
+(2003)](https://doi.org/10.1103/PhysRevB.67.245201). The repository records
+this as a strong upstream attribution rather than independent coordinate-level
+verification because no separately hosted original coordinate checksum has
+been located.
+
 That DOI and the historical PoreMS Zenodo records identify the original work,
 not a SilicaMS release. See [NOTICE.md](NOTICE.md) and
-[CITATION.cff](CITATION.cff) for provenance and citation metadata.
+[CITATION.cff](CITATION.cff) for citation metadata and
+[methods.md](methods.md#bundled-amorphous-template) for the complete template
+provenance, fingerprints, generation history, and limitations.
 
 ## License
 
