@@ -155,6 +155,12 @@ Centering and whole-residue wrapping change positions only. Velocity columns
 are omitted when neither input contains velocities; when only one does, the
 other input's velocities are written as zeros.
 
+The standalone density workflow, its configuration, and its report types live
+in `silicams.slit_density`; filling lives in `silicams.slit_fill`. The package-root
+APIs shown above are unchanged. After updating an existing installation, rerun
+your installation command (including for editable installs) to refresh the
+`silicams-slit-density` console entry point. Its name and options are unchanged.
+
 Filling supports mixed guest reservoirs. Cropping, surface-plane filtering,
 the general all-atom cutoff, and applicable ring-crossing checks are applied
 to every residue type. `target_resname` selects only the species used for

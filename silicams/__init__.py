@@ -26,15 +26,17 @@ from .slit_targets import (
     SiliconStateComposition,
     SiliconStateFractions,
 )
-from .slit_fill import (
+from .slit_density import (
     DensityEstimate,
     DensityProbeEstimate,
-    GuestResidueFilterSummary,
     SlitDensityConfig,
     SlitDensityReport,
+    estimate_guest_density,
+)
+from .slit_fill import (
+    GuestResidueFilterSummary,
     SlitFillConfig,
     SlitFillReport,
-    estimate_guest_density,
     fill_slit,
 )
 from .slit_geometry import (

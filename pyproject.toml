@@ -47,7 +47,7 @@ dev = [
 
 [project.scripts]
 silicams-fill-slit = "silicams.slit_fill:_fill_slit_console_main"
-silicams-slit-density = "silicams.slit_fill:_estimate_guest_density_console_main"
+silicams-slit-density = "silicams.slit_density:_estimate_guest_density_console_main"
 
 [project.urls]
 Homepage = "https://github.com/DrDomenicoMarson/SilicaMS"

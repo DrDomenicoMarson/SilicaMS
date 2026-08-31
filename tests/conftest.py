@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+import math
 from pathlib import Path
 import os
 import shutil
 
 import pytest
+import numpy as np
 
 
 def _configure_test_environment() -> None:
@@ -244,6 +247,326 @@ class SmallBareSlitContext:
             silica_topology=copy.deepcopy(self.prepared_result.silica_topology),
             bare_charge_diagnostics=None,
         )
+
+
+def _gro_atom_line(
+    residue_id: int,
+    residue_name: str,
+    atom_name: str,
+    atom_id: int,
+    x: float,
+    y: float,
+    z: float,
+) -> str:
+    """Return one independently formatted minimal GRO atom line.
+
+    Parameters
+    ----------
+    residue_id : int
+        Residue identifier, wrapped at five digits.
+    residue_name : str
+        Residue name, truncated to five characters.
+    atom_name : str
+        Atom name, truncated to five characters.
+    atom_id : int
+        Atom identifier, wrapped at five digits.
+    x, y, z : float
+        Cartesian position components in nanometers.
+
+    Returns
+    -------
+    str
+        Newline-terminated atom record with three-decimal coordinate precision.
+    """
+
+    return (
+        f"{residue_id % 100000:5d}"
+        f"{residue_name[:5]:<5}"
+        f"{atom_name[:5]:>5}"
+        f"{atom_id % 100000:5d}"
+        f"{x:8.3f}"
+        f"{y:8.3f}"
+        f"{z:8.3f}\n"
+    )
+
+
+def _write_gro(
+    path: Path,
+    atoms: list[tuple[int, str, str, int, float, float, float]],
+    box_values: tuple[float, ...],
+    title: str = "test",
+    velocities: np.ndarray | None = None,
+) -> None:
+    """Write an independently formatted GRO fixture.
+
+    Parameters
+    ----------
+    path : Path
+        Fixture destination.
+    atoms : list[tuple]
+        Residue id/name, atom name/id, and three coordinates in nanometers.
+    box_values : tuple[float, ...]
+        GRO box components in nanometers.
+    title : str, optional
+        First line of the fixture.
+    velocities : ndarray or None, optional
+        Per-atom Cartesian velocities, shape ``(N, 3)``, in nm/ps. Omit the
+        velocity columns when absent.
+    """
+
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(f"{title}\n")
+        handle.write(f"{len(atoms)}\n")
+        for atom_index, atom in enumerate(atoms):
+            line = _gro_atom_line(*atom)
+            if velocities is not None:
+                line = line.rstrip("\n") + "".join(
+                    f"{component:8.4f}" for component in velocities[atom_index]
+                ) + "\n"
+            handle.write(line)
+        if len(box_values) == 3:
+            handle.write(
+                f"{box_values[0]:10.5f}{box_values[1]:10.5f}{box_values[2]:10.5f}\n"
+            )
+        else:
+            handle.write(" ".join(f"{value:10.5f}" for value in box_values) + "\n")
+
+
+def _surface_residue(
+    residue_id: int,
+    atom_id_start: int,
+    x: float,
+    y: float,
+    z: float,
+    residue_name: str = "SUR",
+) -> list[tuple[int, str, str, int, float, float, float]]:
+    """Return one hydroxylated residue used for slit-plane inference.
+
+    Parameters
+    ----------
+    residue_id : int
+        Residue identifier shared by the Si, O, and H records.
+    atom_id_start : int
+        First of three sequential atom identifiers.
+    x, y, z : float
+        Silicon position in nanometers; O and H are offset along x.
+    residue_name : str, optional
+        Residue name for all three records.
+
+    Returns
+    -------
+    list[tuple]
+        Atom records accepted by the shared GRO fixture writer.
+    """
+
+    return [
+        (residue_id, residue_name, "SI1", atom_id_start, x, y, z),
+        (residue_id, residue_name, "O1", atom_id_start + 1, x + 0.05, y, z),
+        (residue_id, residue_name, "H1", atom_id_start + 2, x + 0.08, y, z),
+    ]
+
+
+def _ring_residue(
+    residue_id: int,
+    residue_name: str,
+    atom_id_start: int,
+    center: tuple[float, float, float],
+    radius: float = 0.14,
+) -> list[tuple[int, str, str, int, float, float, float]]:
+    """Return one six-atom aromatic ring residue in the xy plane.
+
+    Parameters
+    ----------
+    residue_id : int
+        Residue identifier shared by all ring atoms.
+    residue_name : str
+        Residue name shared by all ring atoms.
+    atom_id_start : int
+        First of six sequential atom identifiers.
+    center : tuple[float, float, float]
+        Ring center in nanometers.
+    radius : float, optional
+        Ring radius in nanometers.
+
+    Returns
+    -------
+    list[tuple]
+        Atom records named CA1 through CA6 for the shared GRO fixture writer.
+    """
+
+    atoms = []
+    center_x, center_y, center_z = center
+    for index, angle_deg in enumerate(range(0, 360, 60), start=1):
+        angle_rad = math.radians(angle_deg)
+        atoms.append(
+            (
+                residue_id,
+                residue_name,
+                f"CA{index}",
+                atom_id_start + index - 1,
+                center_x + radius * math.cos(angle_rad),
+                center_y + radius * math.sin(angle_rad),
+                center_z,
+            )
+        )
+    return atoms
+
+
+def _bond_residue(
+    residue_id: int,
+    residue_name: str,
+    atom_id_start: int,
+    start: tuple[float, float, float],
+    stop: tuple[float, float, float],
+) -> list[tuple[int, str, str, int, float, float, float]]:
+    """Return one simple two-carbon bond residue.
+
+    Parameters
+    ----------
+    residue_id : int
+        Residue identifier shared by both atoms.
+    residue_name : str
+        Residue name shared by both atoms.
+    atom_id_start : int
+        First of two sequential atom identifiers.
+    start, stop : tuple[float, float, float]
+        Carbon positions defining the segment endpoints in nanometers.
+
+    Returns
+    -------
+    list[tuple]
+        Two atom records accepted by the shared GRO fixture writer.
+    """
+
+    return [
+        (residue_id, residue_name, "C1", atom_id_start, *start),
+        (residue_id, residue_name, "C2", atom_id_start + 1, *stop),
+    ]
+
+
+def _write_basic_slit(path: Path, include_ring: bool = False, include_crossing_bond: bool = False) -> None:
+    """Write a 2 nm cubic slit fixture with two hydroxylated surface residues.
+
+    Parameters
+    ----------
+    path : Path
+        GRO fixture destination.
+    include_ring : bool, optional
+        Add an aromatic ring centered at (1, 1, 1) nm.
+    include_crossing_bond : bool, optional
+        Add a two-carbon segment passing through the same center along z.
+    """
+
+    atoms: list[tuple[int, str, str, int, float, float, float]] = []
+    atoms.extend(_surface_residue(1, 1, 0.2, 0.5, 0.5))
+    atoms.extend(_surface_residue(2, 4, 1.8, 1.5, 1.5))
+    next_atom_id = 7
+    if include_ring:
+        atoms.extend(_ring_residue(3, "SLR", next_atom_id, (1.0, 1.0, 1.0), radius=0.12))
+        next_atom_id += 6
+    if include_crossing_bond:
+        atoms.extend(
+            _bond_residue(
+                4,
+                "BND",
+                next_atom_id,
+                (1.0, 1.0, 0.92),
+                (1.0, 1.0, 1.08),
+            )
+        )
+    _write_gro(path, atoms, (2.0, 2.0, 2.0), title="slit")
+
+
+def _write_guest_box(
+    path: Path,
+    include_inside_ring: bool = True,
+    include_outside_ring: bool = True,
+    include_crossing_bond: bool = False,
+    ring_atom_count: int = 6,
+    residue_name: str = "THY",
+) -> None:
+    """Write a 3 nm cubic guest reservoir for centered cropping tests.
+
+    Parameters
+    ----------
+    path : Path
+        GRO fixture destination.
+    include_inside_ring : bool, optional
+        Include a target residue centered at (1.5, 1.5, 1.5) nm.
+    include_outside_ring : bool, optional
+        Include a target residue centered outside the centered 2 nm crop.
+    include_crossing_bond : bool, optional
+        Append a two-carbon segment to the inside residue.
+    ring_atom_count : int, optional
+        Number of inside-ring atoms retained, up to six.
+    residue_name : str, optional
+        Residue name used for guest records.
+    """
+
+    atoms: list[tuple[int, str, str, int, float, float, float]] = []
+    atom_id = 1
+    if include_inside_ring:
+        ring_atoms = _ring_residue(1, residue_name, atom_id, (1.5, 1.5, 1.5))
+        if ring_atom_count < 6:
+            ring_atoms = ring_atoms[:ring_atom_count]
+        atoms.extend(ring_atoms)
+        atom_id += len(ring_atoms)
+        if include_crossing_bond:
+            atoms.extend(
+                _bond_residue(
+                    1,
+                    residue_name,
+                    atom_id,
+                    (1.0, 1.0, 0.92),
+                    (1.0, 1.0, 1.08),
+                )
+            )
+            atom_id += 2
+    if include_outside_ring:
+        atoms.extend(_ring_residue(2, residue_name, atom_id, (0.2, 1.5, 1.5)))
+    _write_gro(path, atoms, (3.0, 3.0, 3.0), title="guest")
+
+
+@pytest.fixture
+def write_gro() -> Callable[..., None]:
+    """Return the shared, independently formatted GRO fixture writer."""
+
+    return _write_gro
+
+
+@pytest.fixture
+def surface_residue() -> Callable[..., list[tuple]]:
+    """Return the shared hydroxylated surface-residue builder."""
+
+    return _surface_residue
+
+
+@pytest.fixture
+def ring_residue() -> Callable[..., list[tuple]]:
+    """Return the shared ring residue fixture builder."""
+
+    return _ring_residue
+
+
+@pytest.fixture
+def bond_residue() -> Callable[..., list[tuple]]:
+    """Return the shared bond residue fixture builder."""
+
+    return _bond_residue
+
+
+@pytest.fixture
+def write_basic_slit() -> Callable[..., None]:
+    """Return the shared write basic slit fixture builder."""
+
+    return _write_basic_slit
+
+
+@pytest.fixture
+def write_guest_box() -> Callable[..., None]:
+    """Return the shared write guest box fixture builder."""
+
+    return _write_guest_box
 
 
 @pytest.fixture(scope="session")

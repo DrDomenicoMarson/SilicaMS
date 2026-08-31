@@ -147,7 +147,7 @@ def test_only_silicams_cli_entry_points_are_packaged():
     assert project["scripts"] == {
         "silicams-fill-slit": "silicams.slit_fill:_fill_slit_console_main",
         "silicams-slit-density": (
-            "silicams.slit_fill:_estimate_guest_density_console_main"
+            "silicams.slit_density:_estimate_guest_density_console_main"
         ),
     }
     assert not any(name.startswith("porems-") for name in project["scripts"])

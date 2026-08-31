@@ -43,6 +43,12 @@ Slit filling
 .. automodule:: silicams.slit_fill
    :members:
 
+Slit density analysis
+~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: silicams.slit_density
+   :members:
+
 Topology models
 ~~~~~~~~~~~~~~~
 

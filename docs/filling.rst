@@ -25,6 +25,12 @@ For example, reuse geometry written by the construction workflow explicitly:
 
 The equivalent Python entry points are ``silicams.fill_slit`` and
 ``silicams.estimate_guest_density``. Both return structured dataclass reports.
+Density's implementation and types are in ``silicams.slit_density``; filling
+remains in ``silicams.slit_fill``. Package-root imports remain unchanged.
+After updating an existing installation, rerun the installation command,
+including for editable installs, to refresh the ``silicams-slit-density``
+console entry point. The command name and its options have not changed.
+
 The filling implementation preserves complete guest residues and supports
 mixed reservoirs. It applies center cropping, the optional surface-plane
 filter, the all-atom clash check, and every applicable aromatic-ring crossing

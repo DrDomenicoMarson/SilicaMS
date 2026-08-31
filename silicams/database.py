@@ -292,6 +292,33 @@ def get_pdb_element(atom_name, element_token=""):
     return get_element(letters)
 
 
+def _infer_element_from_atom_name(atom_name: str) -> str:
+    """Infer a chemical element symbol from one GRO atom name.
+
+    Parameters
+    ----------
+    atom_name : str
+        Atom name read from the GRO file.
+
+    Returns
+    -------
+    str
+        Normalized chemical element symbol.
+
+    Raises
+    ------
+    ValueError
+        Raised when the atom name cannot be mapped to a supported element.
+    """
+
+    try:
+        return get_pdb_element(atom_name)
+    except ValueError as error:
+        raise ValueError(
+            f"Unsupported element inferred from atom name {atom_name!r}."
+        ) from error
+
+
 def get_vdw_radius(symbol):
     """Return the van der Waals radius of one atom type.
 
