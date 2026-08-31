@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from itertools import product
 
 import numpy as np
 import pytest
@@ -10,6 +11,7 @@ import silicams._gro_io as gro_io_mod
 import silicams.slit_fill as slit_fill_mod
 import silicams.slit_density as density_mod
 import silicams._slit_geometry_io as geometry_io
+import silicams._slit_guest_filter as filtering
 from silicams import PeriodicSlitGeometry
 
 
@@ -78,28 +80,6 @@ def test_fill_paths_must_be_distinct() -> None:
         slit_fill_mod._resolve_fill_config(config)
 
 
-def test_center_crop_guest_residues(module_workspace, write_guest_box) -> None:
-    """The centered crop should keep only residues fully inside the slit box."""
-
-    guest_path = module_workspace.root / "guest_crop.gro"
-    write_guest_box(guest_path)
-
-    guest_system = gro_io_mod._load_gro_system(guest_path)
-    translated_coordinates, selected_mask, crop_window_start = (
-        slit_fill_mod._center_crop_guest_residues(
-            guest_system=guest_system,
-            final_box_lengths=np.array([2.0, 2.0, 2.0], dtype=float),
-        )
-    )
-
-    assert selected_mask.tolist() == [True, False]
-    assert np.allclose(crop_window_start, np.array([0.5, 0.5, 0.5], dtype=float))
-    assert np.allclose(
-        translated_coordinates[0],
-        guest_system.coordinates[0] - np.array([0.5, 0.5, 0.5], dtype=float),
-    )
-
-
 def test_infer_slit_geometry_detects_x_axis(module_workspace, write_basic_slit) -> None:
     """Hydroxylated surface Si atoms should define the slit-normal axis."""
 
@@ -119,114 +99,6 @@ def test_infer_slit_geometry_detects_x_axis(module_workspace, write_basic_slit) 
     assert slit_geometry.lower_plane_nm == pytest.approx(0.2)
     assert slit_geometry.upper_plane_nm == pytest.approx(1.8)
     assert slit_geometry.plane_separation_nm == pytest.approx(1.6)
-
-
-def test_identify_clashes_detects_forward_ring_crossing(
-    module_workspace, write_basic_slit, write_guest_box
-) -> None:
-    """A guest bond through a slit aromatic ring should trigger the forward mask."""
-
-    slit_path = module_workspace.root / "slit_forward.gro"
-    guest_path = module_workspace.root / "guest_forward.gro"
-    write_basic_slit(slit_path, include_ring=True, include_crossing_bond=False)
-    write_guest_box(
-        guest_path,
-        include_inside_ring=True,
-        include_outside_ring=False,
-        include_crossing_bond=True,
-    )
-
-    slit_system = gro_io_mod._load_gro_system(slit_path)
-    guest_system = gro_io_mod._load_gro_system(guest_path)
-    clash_selection, _ = slit_fill_mod._identify_clashing_guest_residues(
-        guest_system=guest_system,
-        slit_system=slit_system,
-        translated_guest_coordinates=guest_system.coordinates.copy(),
-        selected_residue_mask=np.array([True], dtype=bool),
-        slit_coordinates=slit_system.coordinates.copy(),
-        final_box_lengths=np.array([3.0, 3.0, 3.0], dtype=float),
-        general_cutoff_nm=0.05,
-        ring_atom_prefix="CA",
-        ring_plane_tolerance_nm=0.04,
-        ring_polygon_padding_nm=0.02,
-        include_hydrogen_bonds_in_ring_check=True,
-    )
-
-    assert clash_selection.removed_by_forward_ring_mask.tolist() == [True]
-    assert clash_selection.removed_by_reverse_ring_mask.tolist() == [False]
-
-
-def test_identify_clashes_detects_reverse_ring_crossing(
-    module_workspace, write_gro, ring_residue, write_basic_slit
-) -> None:
-    """A slit bond through a guest aromatic ring should trigger the reverse mask."""
-
-    slit_path = module_workspace.root / "slit_reverse.gro"
-    guest_path = module_workspace.root / "guest_reverse.gro"
-    write_basic_slit(slit_path, include_ring=False, include_crossing_bond=True)
-    write_gro(
-        guest_path,
-        ring_residue(1, "THY", 1, (1.0, 1.0, 1.0)),
-        (3.0, 3.0, 3.0),
-        title="guest-reverse",
-    )
-
-    slit_system = gro_io_mod._load_gro_system(slit_path)
-    guest_system = gro_io_mod._load_gro_system(guest_path)
-    clash_selection, _ = slit_fill_mod._identify_clashing_guest_residues(
-        guest_system=guest_system,
-        slit_system=slit_system,
-        translated_guest_coordinates=guest_system.coordinates.copy(),
-        selected_residue_mask=np.array([True], dtype=bool),
-        slit_coordinates=slit_system.coordinates.copy(),
-        final_box_lengths=np.array([3.0, 3.0, 3.0], dtype=float),
-        general_cutoff_nm=0.05,
-        ring_atom_prefix="CA",
-        ring_plane_tolerance_nm=0.04,
-        ring_polygon_padding_nm=0.02,
-        include_hydrogen_bonds_in_ring_check=True,
-    )
-
-    assert clash_selection.removed_by_forward_ring_mask.tolist() == [False]
-    assert clash_selection.removed_by_reverse_ring_mask.tolist() == [True]
-
-
-def test_guest_with_only_excluded_hydrogen_bonds_is_supported(
-    module_workspace, write_gro, write_basic_slit
-) -> None:
-    """Allow water-like guests when hydrogen bonds are omitted from ring checks."""
-
-    slit_path = module_workspace.root / "slit_water.gro"
-    guest_path = module_workspace.root / "guest_water.gro"
-    write_basic_slit(slit_path)
-    write_gro(
-        guest_path,
-        [
-            (1, "SOL", "OW", 1, 1.0, 1.0, 1.0),
-            (1, "SOL", "HW1", 2, 1.096, 1.0, 1.0),
-            (1, "SOL", "HW2", 3, 0.968, 1.091, 1.0),
-        ],
-        (2.0, 2.0, 2.0),
-    )
-    slit_system = gro_io_mod._load_gro_system(slit_path)
-    guest_system = gro_io_mod._load_gro_system(guest_path)
-
-    selection, cache = slit_fill_mod._identify_clashing_guest_residues(
-        guest_system=guest_system,
-        slit_system=slit_system,
-        translated_guest_coordinates=guest_system.coordinates.copy(),
-        selected_residue_mask=np.array([True], dtype=bool),
-        slit_coordinates=slit_system.coordinates.copy(),
-        final_box_lengths=np.array([2.0, 2.0, 2.0]),
-        general_cutoff_nm=0.05,
-        ring_atom_prefix="CA",
-        ring_plane_tolerance_nm=0.04,
-        ring_polygon_padding_nm=0.02,
-        include_hydrogen_bonds_in_ring_check=False,
-    )
-
-    assert not selection.removed_residue_mask[0]
-    assert cache.guest_bond_geometries == ()
 
 
 def test_fill_slit_writes_merged_gro_and_human_report(
@@ -481,6 +353,109 @@ def test_fill_slit_filters_every_residue_type_and_reports_each_one(
     assert "Residue filtering: NA" in output_path.with_suffix(".log").read_text(
         encoding="utf-8"
     )
+
+
+def test_fill_reports_preserve_all_overlap_categories(
+    tmp_path, write_gro, write_basic_slit, monkeypatch
+):
+    """Keep target and per-type accounting for every combination of clash masks."""
+
+    guest_path, slit_path = tmp_path / "guest.gro", tmp_path / "slit.gro"
+    output_path = tmp_path / "filled.gro"
+    write_basic_slit(slit_path)
+    atoms = []
+    mask_rows = []
+    selected_rows = []
+    for name in ("THY", "ION"):
+        for combination in product((False, True), repeat=3):
+            identifier = len(atoms) + 1
+            atoms.append((identifier, name, "C1", identifier, 1.5, 1.5, 1.5))
+            mask_rows.append(combination)
+            selected_rows.append(True)
+        for x in (0.2, 0.6):
+            identifier = len(atoms) + 1
+            atoms.append((identifier, name, "C1", identifier, x, 1.5, 1.5))
+            mask_rows.append((False, False, False))
+            selected_rows.append(False)
+    write_gro(guest_path, atoms, (3.0, 3.0, 3.0))
+    general, forward, reverse = np.array(mask_rows, dtype=bool).T
+    selection = filtering._ClashSelection(
+        general | forward | reverse, general, forward, reverse, forward | reverse
+    )
+    cache = filtering._RingCheckCache((), (), (), (), (), ())
+
+    def classify(**kwargs):
+        """Isolate report accounting using known masks for all overlap categories.
+
+        Parameters
+        ----------
+        **kwargs : object
+            Workflow-supplied filtering inputs, including the real crop/plane mask.
+
+        Returns
+        -------
+        tuple[_ClashSelection, _RingCheckCache]
+            Explicit removal masks and empty report geometry.
+        """
+
+        np.testing.assert_array_equal(kwargs["selected_residue_mask"], selected_rows)
+        return selection, cache
+
+    monkeypatch.setattr(slit_fill_mod, "_identify_clashing_guest_residues", classify)
+    report = slit_fill_mod.fill_slit(
+        slit_fill_mod.SlitFillConfig(
+            guest_path=guest_path,
+            slit_path=slit_path,
+            output_path=output_path,
+            density_sample_count=100,
+            density_seed_count=1,
+            density_probe_radii_nm=(0.0,),
+            random_seed=11,
+        )
+    )
+    assert report.initial_guest_molecules == 10
+    assert report.cropped_guest_molecules == 9
+    assert report.removed_outside_crop_guest_molecules == 1
+    assert report.surface_plane_filtered_guest_molecules == 8
+    assert report.removed_by_surface_plane_guest_molecules == 1
+    assert report.removed_by_general_cutoff_guest_molecules == 4
+    assert report.removed_by_forward_ring_guest_molecules == 4
+    assert report.removed_by_reverse_ring_guest_molecules == 4
+    assert report.removed_by_any_ring_guest_molecules == 6
+    assert report.removed_by_clash_guest_molecules == 7
+    assert report.removed_guest_molecules == 9
+    assert report.remaining_guest_molecules == 1
+    for field in (
+        "removed_by_general_only_guest_molecules",
+        "removed_by_forward_ring_only_guest_molecules",
+        "removed_by_reverse_ring_only_guest_molecules",
+        "removed_by_general_and_forward_ring_only_guest_molecules",
+        "removed_by_general_and_reverse_ring_only_guest_molecules",
+        "removed_by_forward_and_reverse_ring_only_guest_molecules",
+        "removed_by_general_and_forward_and_reverse_ring_guest_molecules",
+    ):
+        assert getattr(report, field) == 1
+    assert [summary.residue_name for summary in report.residue_filter_summaries] == [
+        "ION",
+        "THY",
+    ]
+    for summary in report.residue_filter_summaries:
+        assert summary.initial_residues == 10
+        assert summary.cropped_residues == 9
+        assert summary.removed_outside_crop_residues == 1
+        assert summary.surface_plane_filtered_residues == 8
+        assert summary.removed_by_surface_plane_residues == 1
+        assert summary.removed_by_general_cutoff_residues == 4
+        assert summary.removed_by_forward_ring_residues == 4
+        assert summary.removed_by_reverse_ring_residues == 4
+        assert summary.removed_by_any_ring_residues == 6
+        assert summary.removed_by_any_clash_residues == 7
+        assert summary.removed_total_residues == 9
+        assert summary.remaining_residues == 1
+    output = gro_io_mod._load_gro_system(output_path)
+    assert report.final_atom_count == output.atom_count == 8
+    assert report.final_residue_count == len(output.residue_spans) == 4
+    assert output.residue_names[-2:] == ["THY", "ION"]
 
 
 @pytest.mark.parametrize("existing_outputs", (False, True))
