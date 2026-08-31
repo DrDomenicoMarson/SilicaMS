@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 import importlib.util
 import inspect
 import json
@@ -14,39 +14,12 @@ import silicams as sms
 import silicams.generic as generic
 import silicams.geometry as geometry
 import silicams.slit as slit_mod
+import silicams.slit_targets as target_mod
 import silicams.utils as utils
 import silicams.writers.common as snapshot_mod
 from silicams.connectivity import AssembledStructureGraph, ConnectivityValidationReport
 import silicams.topology as topo_mod
 from silicams._version import __version__ as EXPECTED_VERSION
-
-
-def experimental_target_from_surface(surface_target, surface_silicon_fraction):
-    """Build an experimental all-silicon target from surface-only fractions.
-
-    Parameters
-    ----------
-    surface_target : SiliconStateFractions
-        Desired surface-only silicon-state fractions.
-    surface_silicon_fraction : float
-        Physical surface-to-total silicon fraction used for the
-        back-conversion and stored on the experimental target.
-
-    Returns
-    -------
-    target : ExperimentalSiliconStateTarget
-        Experimental all-silicon target that maps back to ``surface_target``
-        when the same physical surface-silicon fraction is applied.
-    """
-    alpha = surface_silicon_fraction
-    return sms.ExperimentalSiliconStateTarget(
-        q2_fraction=alpha * surface_target.q2_fraction,
-        q3_fraction=alpha * surface_target.q3_fraction,
-        q4_fraction=alpha * surface_target.q4_fraction + (1.0 - alpha),
-        t2_fraction=alpha * surface_target.t2_fraction,
-        t3_fraction=alpha * surface_target.t3_fraction,
-        surface_silicon_fraction=surface_silicon_fraction,
-    )
 
 
 def test_topology_parameter_helpers_are_exported_from_package_root():
@@ -125,14 +98,6 @@ def test_amorphous_slit_config_normalizes_numpy_integers():
     assert type(config.repeat_y) is int
     assert type(config.random_seed) is int
     assert config.template_split_pairs == ((10, 11),)
-
-
-@pytest.mark.parametrize("value", (1.5, True))
-def test_silicon_state_composition_requires_integer_counts(value):
-    """Reject non-integer silicon-state population counts."""
-
-    with pytest.raises(TypeError, match="integer"):
-        sms.SiliconStateComposition(value, value, 0, 0)
 
 
 @pytest.mark.parametrize("function", (1.5, True))
@@ -989,47 +954,6 @@ class TestAmorphousSlitBehavior:
         assert result.report.prepared_surface.q3_sites == 652
         assert result.report.prepared_surface.q4_sites == 239
 
-    def test_physical_surface_fraction_uses_unified_conversion(self):
-        reference_surface = sms.SiliconStateFractions(0.069, 0.681, 0.25)
-        experimental_target = experimental_target_from_surface(
-            reference_surface,
-            0.2,
-        )
-        converted = slit_mod._surface_target_from_experimental(experimental_target)
-
-        assert converted.q2_fraction == pytest.approx(reference_surface.q2_fraction)
-        assert converted.q3_fraction == pytest.approx(reference_surface.q3_fraction)
-        assert converted.q4_fraction == pytest.approx(reference_surface.q4_fraction)
-
-    def test_surface_conversion_example_matches_expected_q2_enrichment(self):
-        target = sms.ExperimentalSiliconStateTarget(
-            q2_fraction=0.5,
-            q3_fraction=0.0,
-            surface_silicon_fraction=0.5,
-        )
-        surface_target = slit_mod._surface_target_from_experimental(target)
-
-        assert surface_target == sms.SiliconStateFractions(1.0, 0.0, 0.0)
-
-    def test_surface_silicon_fraction_is_mandatory(self):
-        with pytest.raises(TypeError, match="surface_silicon_fraction"):
-            sms.ExperimentalSiliconStateTarget(
-                q2_fraction=0.02,
-                q3_fraction=0.03,
-            )
-
-    @pytest.mark.parametrize("surface_silicon_fraction", (0.0, -0.1, 1.1, np.nan))
-    def test_surface_silicon_fraction_must_be_finite_and_physical(
-        self,
-        surface_silicon_fraction,
-    ):
-        with pytest.raises(ValueError, match="surface-silicon fraction"):
-            sms.ExperimentalSiliconStateTarget(
-                q2_fraction=0.02,
-                q3_fraction=0.03,
-                surface_silicon_fraction=surface_silicon_fraction,
-            )
-
     def test_random_seed_reproducibly_changes_bare_surface_realization(self):
         target = sms.ExperimentalSiliconStateTarget(
             q2_fraction=307 / 957,
@@ -1067,44 +991,6 @@ class TestAmorphousSlitBehavior:
 
         assert seed_a_pairs == repeated_seed_a_pairs
         assert seed_a_pairs != seed_b_pairs
-
-    def test_q4_fraction_is_derived_when_omitted(self):
-        target = sms.ExperimentalSiliconStateTarget(
-            q2_fraction=0.02,
-            q3_fraction=0.03,
-            surface_silicon_fraction=0.5,
-            t2_fraction=0.04,
-            t3_fraction=0.01,
-        )
-
-        assert target.q4_fraction == pytest.approx(0.9, abs=1e-12)
-        assert asdict(target)["q4_fraction"] == pytest.approx(0.9, abs=1e-12)
-
-    def test_explicit_q4_fraction_must_match_remainder(self):
-        with pytest.raises(ValueError, match="q4 fraction"):
-            sms.ExperimentalSiliconStateTarget(
-                q2_fraction=0.02,
-                q3_fraction=0.03,
-                surface_silicon_fraction=1.0,
-                q4_fraction=0.89,
-                t2_fraction=0.04,
-                t3_fraction=0.01,
-            )
-
-    def test_invalid_alpha_target_combinations_raise(self):
-        with pytest.raises(
-            ValueError,
-            match=(
-                r"Minimum required fraction is 0\.500000, observed 0\.400000"
-            ),
-        ):
-            slit_mod._surface_target_from_experimental(
-                sms.ExperimentalSiliconStateTarget(
-                    q2_fraction=0.5,
-                    q3_fraction=0.0,
-                    surface_silicon_fraction=0.4,
-                ),
-            )
 
     def test_bridge_algebra_matches_q_state_changes(self, small_bare_slit_context):
         cases = [
@@ -1187,7 +1073,7 @@ class TestAmorphousSlitBehavior:
             config.siloxane_distance_range_nm,
             ligand=None,
         )
-        errors = slit_mod._surface_fraction_errors(
+        errors = target_mod._surface_fraction_errors(
             attempt.final_surface,
             requested_target,
         )
@@ -2259,7 +2145,7 @@ class TestFunctionalizedAmorphousSlit:
 
         assert result.report.used_surface_tolerance
         assert result.report.final_surface == sms.SiliconStateComposition(957, 63, 648, 239, 3, 4)
-        errors = slit_mod._surface_fraction_errors(
+        errors = target_mod._surface_fraction_errors(
             result.report.final_surface,
             result.report.derived_surface_target,
         )

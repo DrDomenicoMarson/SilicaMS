@@ -5,7 +5,6 @@ from .molecule import Molecule
 from .slit import (
     AmorphousSlitBuilder,
     AmorphousSlitConfig,
-    ExperimentalSiliconStateTarget,
     FunctionalizedAmorphousSlitConfig,
     FunctionalizedSlitProgressConfig,
     FunctionalizedSlitResult,
@@ -14,8 +13,6 @@ from .slit import (
     SilaneAttachmentConfig,
     SilaneGeminalCrossTerms,
     SilaneTopologyConfig,
-    SiliconStateComposition,
-    SiliconStateFractions,
     SlitPreparationReport,
     SlitPreparationResult,
     SlitTimingSummary,
@@ -23,6 +20,11 @@ from .slit import (
     prepare_functionalized_amorphous_slit_surface,
     write_bare_amorphous_slit,
     write_functionalized_amorphous_slit,
+)
+from .slit_targets import (
+    ExperimentalSiliconStateTarget,
+    SiliconStateComposition,
+    SiliconStateFractions,
 )
 from .slit_fill import (
     DensityEstimate,

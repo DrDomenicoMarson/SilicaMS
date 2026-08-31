@@ -19,6 +19,12 @@ Slit construction
 .. automodule:: silicams.slit
    :members:
 
+Silicon-state targets
+~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: silicams.slit_targets
+   :members:
+
 Slit model
 ~~~~~~~~~~
 
