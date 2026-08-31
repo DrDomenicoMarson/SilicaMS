@@ -39,6 +39,12 @@ hydroxylated surface Si atoms. It never discovers a neighboring YAML file
 automatically. Filling writes the geometry after output-axis permutation to
 ``<output_stem>.yml``.
 
+The output slit normal is on ``z``. Coordinates, optional input velocities,
+box lengths, and geometry use the same axis permutation. Centering and
+whole-residue wrapping affect positions only; input arrays are not modified.
+Velocity columns are omitted when neither input supplies velocities. If only
+one input supplies them, the other input's output velocities are zero-filled.
+
 ``SlitFillConfig.general_cutoff_nm`` is a continuous, user-selectable
 all-atom cutoff. Its ``0.10 nm`` default is deliberately permissive so dense
 reservoirs can provide useful starting configurations. ``0.15`` and ``0.20

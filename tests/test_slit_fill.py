@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import yaml
 
+import silicams._gro_io as gro_io_mod
 import silicams.slit_fill as slit_fill_mod
 from silicams import PeriodicSlitGeometry
 
@@ -113,14 +114,35 @@ def _write_gro(
     atoms: list[tuple[int, str, str, int, float, float, float]],
     box_values: tuple[float, ...],
     title: str = "test",
+    velocities: np.ndarray | None = None,
 ) -> None:
-    """Write a simple GRO file for tests."""
+    """Write an independently formatted GRO fixture.
+
+    Parameters
+    ----------
+    path : Path
+        Fixture destination.
+    atoms : list[tuple]
+        Residue id/name, atom name/id, and three coordinates in nanometers.
+    box_values : tuple[float, ...]
+        GRO box components in nanometers.
+    title : str, optional
+        First line of the fixture.
+    velocities : ndarray or None, optional
+        Per-atom Cartesian velocities, shape ``(N, 3)``, in nm/ps. Omit the
+        velocity columns when absent.
+    """
 
     with path.open("w", encoding="utf-8") as handle:
         handle.write(f"{title}\n")
         handle.write(f"{len(atoms)}\n")
-        for atom in atoms:
-            handle.write(_gro_atom_line(*atom))
+        for atom_index, atom in enumerate(atoms):
+            line = _gro_atom_line(*atom)
+            if velocities is not None:
+                line = line.rstrip("\n") + "".join(
+                    f"{component:8.4f}" for component in velocities[atom_index]
+                ) + "\n"
+            handle.write(line)
         if len(box_values) == 3:
             handle.write(
                 f"{box_values[0]:10.5f}{box_values[1]:10.5f}{box_values[2]:10.5f}\n"
@@ -251,7 +273,7 @@ def test_center_crop_guest_residues(module_workspace) -> None:
     guest_path = module_workspace.root / "guest_crop.gro"
     _write_guest_box(guest_path)
 
-    guest_system = slit_fill_mod._load_gro_system(guest_path)
+    guest_system = gro_io_mod._load_gro_system(guest_path)
     translated_coordinates, selected_mask, crop_window_start = slit_fill_mod._center_crop_guest_residues(
         guest_system=guest_system,
         final_box_lengths=np.array([2.0, 2.0, 2.0], dtype=float),
@@ -270,7 +292,7 @@ def test_infer_slit_geometry_detects_x_axis(module_workspace) -> None:
 
     slit_path = module_workspace.root / "slit_plane.gro"
     _write_basic_slit(slit_path)
-    slit_system = slit_fill_mod._load_gro_system(slit_path)
+    slit_system = gro_io_mod._load_gro_system(slit_path)
 
     slit_geometry = slit_fill_mod._infer_slit_geometry(
         slit_system=slit_system,
@@ -299,8 +321,8 @@ def test_identify_clashes_detects_forward_ring_crossing(module_workspace) -> Non
         include_crossing_bond=True,
     )
 
-    slit_system = slit_fill_mod._load_gro_system(slit_path)
-    guest_system = slit_fill_mod._load_gro_system(guest_path)
+    slit_system = gro_io_mod._load_gro_system(slit_path)
+    guest_system = gro_io_mod._load_gro_system(guest_path)
     clash_selection, _ = slit_fill_mod._identify_clashing_guest_residues(
         guest_system=guest_system,
         slit_system=slit_system,
@@ -332,8 +354,8 @@ def test_identify_clashes_detects_reverse_ring_crossing(module_workspace) -> Non
         title="guest-reverse",
     )
 
-    slit_system = slit_fill_mod._load_gro_system(slit_path)
-    guest_system = slit_fill_mod._load_gro_system(guest_path)
+    slit_system = gro_io_mod._load_gro_system(slit_path)
+    guest_system = gro_io_mod._load_gro_system(guest_path)
     clash_selection, _ = slit_fill_mod._identify_clashing_guest_residues(
         guest_system=guest_system,
         slit_system=slit_system,
@@ -367,8 +389,8 @@ def test_guest_with_only_excluded_hydrogen_bonds_is_supported(module_workspace) 
         ],
         (2.0, 2.0, 2.0),
     )
-    slit_system = slit_fill_mod._load_gro_system(slit_path)
-    guest_system = slit_fill_mod._load_gro_system(guest_path)
+    slit_system = gro_io_mod._load_gro_system(slit_path)
+    guest_system = gro_io_mod._load_gro_system(guest_path)
 
     selection, cache = slit_fill_mod._identify_clashing_guest_residues(
         guest_system=guest_system,
@@ -412,7 +434,7 @@ def test_fill_slit_writes_merged_gro_and_human_report(module_workspace, capsys) 
     )
     captured = capsys.readouterr()
 
-    merged_system = slit_fill_mod._load_gro_system(output_path)
+    merged_system = gro_io_mod._load_gro_system(output_path)
     log_text = log_path.read_text(encoding="utf-8")
 
     assert captured.out == ""
@@ -442,6 +464,124 @@ def test_fill_slit_writes_merged_gro_and_human_report(module_workspace, capsys) 
     assert "Output" in log_text
     assert "General cutoff" in log_text
     assert "0.100 nm" in log_text
+
+
+@pytest.mark.parametrize("normal_axis", (0, 1, 2))
+@pytest.mark.parametrize("slit_has_velocities,guest_has_velocities", (
+    (False, False), (True, False), (False, True), (True, True),
+))
+@pytest.mark.parametrize("wrap_output", (False, True))
+def test_fill_slit_keeps_positions_and_velocities_in_the_same_output_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    normal_axis: int,
+    slit_has_velocities: bool,
+    guest_has_velocities: bool,
+    wrap_output: bool,
+) -> None:
+    """Reframe retained vectors together without translating velocities or inputs."""
+
+    box = np.array([2.0, 3.0, 4.0])
+    slit_coordinates = np.array([[0.1, 0.2, 0.3], [1.9, 2.8, 3.7]])
+    boundary_position = box / 2.0
+    tangential_axis = (normal_axis + 1) % 3
+    boundary_position[tangential_axis] = box[tangential_axis]
+    # A retained dimer, a clashing residue, a retained boundary residue, and
+    # a residue outside the crop. Distinct velocities detect indexing errors.
+    guest_coordinates = np.array([
+        [1.0, 1.5, 2.0], [1.1, 1.5, 2.0], slit_coordinates[0],
+        boundary_position, [-0.75, -0.75, -0.75],
+    ]) + 1.0
+    slit_velocities = np.array([[1.1, -2.2, 3.3], [-4.4, 5.5, -6.6]])
+    guest_velocities = np.arange(1.0, 16.0).reshape(5, 3) / 10.0
+    guest_velocities[:, 1] *= -1
+    slit_path = tmp_path / "slit.gro"
+    guest_path = tmp_path / "guest.gro"
+    output_path = tmp_path / "filled.gro"
+    _write_gro(
+        slit_path,
+        [(index + 1, "SIL", "SI1", index + 1, *position)
+         for index, position in enumerate(slit_coordinates)],
+        tuple(box),
+        velocities=slit_velocities if slit_has_velocities else None,
+    )
+    _write_gro(
+        guest_path,
+        [(residue_id, "GAS", atom_name, index + 1, *position)
+         for index, (residue_id, atom_name, position) in enumerate(zip(
+             (9, 9, 4, 22, 24), ("C1", "O1", "C2", "C3", "C4"),
+             guest_coordinates, strict=True,
+         ))],
+        tuple(box + 2.0),
+        velocities=guest_velocities if guest_has_velocities else None,
+    )
+    load_gro = gro_io_mod._load_gro_system
+    sources = {path: load_gro(path) for path in (slit_path, guest_path)}
+    source_bytes = {path: path.read_bytes() for path in sources}
+    source_arrays = []
+    for system in sources.values():
+        for array in (system.coordinates, system.velocities, system.box_lengths):
+            if array is not None:
+                source_arrays.append((array, array.copy()))
+                array.setflags(write=False)
+    monkeypatch.setattr(slit_fill_mod, "_load_gro_system", sources.__getitem__)
+
+    report = slit_fill_mod.fill_slit(slit_fill_mod.SlitFillConfig(
+        slit_path=slit_path,
+        guest_path=guest_path,
+        output_path=output_path,
+        target_resname="GAS",
+        slit_geometry=PeriodicSlitGeometry(
+            box_lengths_nm=tuple(box), normal_axis_index=normal_axis,
+            lower_plane_nm=0.2, upper_plane_nm=float(box[normal_axis] - 0.2),
+        ),
+        use_surface_plane_filter=False,
+        wrap_output=wrap_output,
+        density_sample_count=100,
+        density_seed_count=1,
+        density_probe_radii_nm=(0.0,),
+        random_seed=17,
+    ))
+
+    permutation = ((2, 1, 0), (0, 2, 1), (0, 1, 2))[normal_axis]
+    kept_guest_indices = [0, 1, 3]
+    expected_guest_coordinates = (guest_coordinates[kept_guest_indices] - 1.0).copy()
+    if wrap_output:
+        expected_guest_coordinates[-1, tangential_axis] = 0.0
+    expected_coordinates = np.vstack((slit_coordinates, expected_guest_coordinates))
+    expected_coordinates = expected_coordinates[:, permutation]
+    output_system = load_gro(output_path)
+    np.testing.assert_allclose(output_system.coordinates, expected_coordinates, atol=1e-12)
+    np.testing.assert_array_equal(output_system.box_lengths, box[list(permutation)])
+    assert output_system.atom_names == ["SI1", "SI1", "C1", "O1", "C3"]
+    assert output_system.residue_ids.tolist() == [1, 2, 3, 3, 4]
+    assert output_system.atom_ids.tolist() == [1, 2, 3, 4, 5]
+    assert report.removed_outside_crop_guest_molecules == 1
+    assert report.removed_by_general_cutoff_guest_molecules == 1
+    assert report.remaining_guest_molecules == 2
+    assert report.final_atom_count == 5
+    assert report.final_residue_count == 4
+    assert report.output_axis_permutation == permutation
+    assert report.output_slit_geometry.normal_axis_index == 2
+    metadata = yaml.safe_load(output_path.with_suffix(".yml").read_text())
+    assert PeriodicSlitGeometry.from_dict(metadata["slit_geometry"]) == (
+        report.output_slit_geometry
+    )
+
+    atom_lines = output_path.read_text().splitlines()[2:-1]
+    if slit_has_velocities or guest_has_velocities:
+        expected_velocities = np.vstack((
+            slit_velocities if slit_has_velocities else np.zeros((2, 3)),
+            guest_velocities[kept_guest_indices] if guest_has_velocities else np.zeros((3, 3)),
+        ))[:, permutation]
+        np.testing.assert_array_equal(output_system.velocities, expected_velocities)
+        assert all(len(line) == 68 for line in atom_lines)
+    else:
+        assert output_system.velocities is None
+        assert all(len(line) == 44 for line in atom_lines)
+    for array, original in source_arrays:
+        np.testing.assert_array_equal(array, original)
+    assert {path: path.read_bytes() for path in sources} == source_bytes
 
 
 def test_fill_slit_filters_every_residue_type_and_reports_each_one(
@@ -476,7 +616,7 @@ def test_fill_slit_filters_every_residue_type_and_reports_each_one(
     summaries = {
         summary.residue_name: summary for summary in report.residue_filter_summaries
     }
-    output_system = slit_fill_mod._load_gro_system(output_path)
+    output_system = gro_io_mod._load_gro_system(output_path)
 
     assert summaries["NA"].removed_by_general_cutoff_residues == 1
     assert summaries["CL"].removed_by_surface_plane_residues == 1
@@ -489,35 +629,61 @@ def test_fill_slit_filters_every_residue_type_and_reports_each_one(
     )
 
 
-def test_fill_slit_late_failure_preserves_existing_output_set(
-    module_workspace,
+@pytest.mark.parametrize("existing_outputs", (False, True))
+@pytest.mark.parametrize("failure_stage", ("gro", "metadata", "counts"))
+def test_fill_slit_late_failure_preserves_output_set(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    existing_outputs: bool,
+    failure_stage: str,
 ) -> None:
-    """Keep prior GRO, metadata, and log files when staged metadata writing fails."""
+    """Keep old outputs or expose no new set when staged writing/count checks fail."""
 
-    guest_path = module_workspace.root / "guest_transaction.gro"
-    slit_path = module_workspace.root / "slit_transaction.gro"
-    output_path = module_workspace.root / "merged_transaction.gro"
+    guest_path = tmp_path / "guest_transaction.gro"
+    slit_path = tmp_path / "slit_transaction.gro"
+    output_path = tmp_path / "merged_transaction.gro"
     metadata_path = output_path.with_suffix(".yml")
     log_path = output_path.with_suffix(".log")
     _write_guest_box(guest_path, include_outside_ring=False)
     _write_basic_slit(slit_path)
-    output_path.write_text("old gro", encoding="utf-8")
-    metadata_path.write_text("old metadata", encoding="utf-8")
-    log_path.write_text("old log", encoding="utf-8")
+    old_contents = {output_path: "old gro", metadata_path: "old metadata", log_path: "old log"}
+    if existing_outputs:
+        for path, content in old_contents.items():
+            path.write_text(content, encoding="utf-8")
 
     def fail_metadata_write(*args, **kwargs):
         """Inject a failure after the merged GRO has been staged."""
 
         raise RuntimeError("injected metadata failure")
 
-    monkeypatch.setattr(
-        slit_fill_mod,
-        "_write_slit_geometry_metadata",
-        fail_metadata_write,
-    )
+    def fail_gro_write(*args, **kwargs):
+        """Write a partial staged GRO before raising a filesystem failure."""
 
-    with pytest.raises(RuntimeError, match="injected metadata failure"):
+        staged_path = kwargs["output_path"]
+        assert staged_path != output_path
+        assert staged_path.parent == output_path.parent
+        staged_path.write_text("partial staged gro", encoding="utf-8")
+        raise OSError("injected GRO failure")
+
+    real_gro_writer = slit_fill_mod._write_merged_gro
+
+    def write_inconsistent_counts(*args, **kwargs):
+        """Exercise the workflow's independent staged atom-count validation."""
+
+        atoms, residues = real_gro_writer(*args, **kwargs)
+        return atoms + 1, residues
+
+    if failure_stage == "metadata":
+        monkeypatch.setattr(slit_fill_mod, "_write_slit_geometry_metadata", fail_metadata_write)
+        expected_error, message = RuntimeError, "injected metadata failure"
+    elif failure_stage == "gro":
+        monkeypatch.setattr(slit_fill_mod, "_write_merged_gro", fail_gro_write)
+        expected_error, message = OSError, "injected GRO failure"
+    else:
+        monkeypatch.setattr(slit_fill_mod, "_write_merged_gro", write_inconsistent_counts)
+        expected_error, message = RuntimeError, "Staged GRO counts diverged"
+
+    with pytest.raises(expected_error, match=message):
         slit_fill_mod.fill_slit(
             slit_fill_mod.SlitFillConfig(
                 guest_path=guest_path,
@@ -531,10 +697,13 @@ def test_fill_slit_late_failure_preserves_existing_output_set(
             )
         )
 
-    assert output_path.read_text(encoding="utf-8") == "old gro"
-    assert metadata_path.read_text(encoding="utf-8") == "old metadata"
-    assert log_path.read_text(encoding="utf-8") == "old log"
-    assert not list(module_workspace.root.glob("*.silicams-stage-*"))
+    for path, content in old_contents.items():
+        if existing_outputs:
+            assert path.read_text(encoding="utf-8") == content
+        else:
+            assert not path.exists()
+    assert not list(tmp_path.glob("*.silicams-stage-*"))
+    assert not list(tmp_path.glob("*.silicams-backup-*"))
 
 
 def test_density_analysis_is_reproducible_and_cli_helpers_accept_argv(

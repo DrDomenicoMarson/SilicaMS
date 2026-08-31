@@ -13,7 +13,7 @@ import warnings
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Sequence, TextIO
+from typing import Sequence
 
 import numpy as np
 import yaml
@@ -22,6 +22,13 @@ from numpy.typing import NDArray
 from scipy.spatial import cKDTree
 
 import silicams.database as db
+from silicams._gro_io import (
+    BOX_LINE_TOLERANCE_NM,
+    _GroSystem,
+    _build_residue_spans,
+    _load_gro_system,
+    _write_merged_gro,
+)
 from silicams._output_transaction import staged_output_paths
 from silicams._validation import boolean, finite_real, integral
 from silicams.slit_geometry import (
@@ -37,7 +44,6 @@ IntArray = NDArray[np.int32]
 BoolArray = NDArray[np.bool_]
 
 DEFAULT_DENSITY_PROBE_RADII_NM = (0.00, 0.14, 0.20)
-BOX_LINE_TOLERANCE_NM = 1.0e-6
 SLIT_COORDINATE_TOLERANCE_NM = 1.0e-6
 GRAMS_PER_DA = 1.66053906660e-24
 CUBIC_CENTIMETERS_PER_NM3 = 1.0e-21
@@ -566,38 +572,6 @@ class SlitDensityReport:
 
 
 @dataclass(frozen=True)
-class _ResidueSpan:
-    """Contiguous atom range for one residue in a GRO file."""
-
-    residue_id: int
-    residue_name: str
-    start: int
-    stop: int
-
-
-@dataclass(frozen=True)
-class _GroSystem:
-    """Internal GRO representation used by the slit-filling workflows."""
-
-    title: str
-    residue_ids: IntArray
-    residue_names: list[str]
-    atom_names: list[str]
-    atom_ids: IntArray
-    coordinates: FloatArray
-    velocities: FloatArray | None
-    box_lengths: FloatArray
-    residue_spans: tuple[_ResidueSpan, ...]
-    atom_to_residue_index: IntArray
-
-    @property
-    def atom_count(self) -> int:
-        """Return the number of atoms stored in the GRO system."""
-
-        return int(self.coordinates.shape[0])
-
-
-@dataclass(frozen=True)
 class _SurfacePlaneSelection:
     """Result of filtering guest residues against the detected slit interval."""
 
@@ -743,134 +717,6 @@ def _resolve_density_config(config: SlitDensityConfig) -> SlitDensityConfig:
         config,
         log_path=config.input_path.with_name(f"{config.input_path.stem}_density.log"),
     )
-
-
-def _load_gro_system(path: Path) -> _GroSystem:
-    """Load a GRO file into the internal slit-fill representation.
-
-    Parameters
-    ----------
-    path : Path
-        Path to the GRO file.
-
-    Returns
-    -------
-    _GroSystem
-        Parsed GRO system.
-
-    Raises
-    ------
-    ValueError
-        Raised when the input file does not describe an orthorhombic box.
-    """
-
-    with path.open("r", encoding="utf-8") as handle:
-        title = handle.readline().rstrip("\n")
-        atom_count = int(handle.readline().strip())
-
-        residue_ids = np.empty(atom_count, dtype=np.int32)
-        atom_ids = np.empty(atom_count, dtype=np.int32)
-        coordinates = np.empty((atom_count, 3), dtype=np.float64)
-        velocities = np.zeros((atom_count, 3), dtype=np.float64)
-        has_velocities = False
-        residue_names: list[str] = []
-        atom_names: list[str] = []
-
-        for atom_index in range(atom_count):
-            line = handle.readline().rstrip("\n")
-            residue_ids[atom_index] = int(line[0:5])
-            residue_names.append(line[5:10].strip())
-            atom_names.append(line[10:15].strip())
-            atom_ids[atom_index] = int(line[15:20])
-            coordinates[atom_index, 0] = float(line[20:28])
-            coordinates[atom_index, 1] = float(line[28:36])
-            coordinates[atom_index, 2] = float(line[36:44])
-
-            if len(line) >= 68:
-                velocities[atom_index, 0] = float(line[44:52])
-                velocities[atom_index, 1] = float(line[52:60])
-                velocities[atom_index, 2] = float(line[60:68])
-                has_velocities = True
-
-        box_values = [float(value) for value in handle.readline().split()]
-
-    if len(box_values) == 3:
-        orthorhombic_box = np.array(box_values, dtype=np.float64)
-    elif len(box_values) == 9:
-        off_diagonal_values = np.array(box_values[3:9], dtype=np.float64)
-        if np.any(np.abs(off_diagonal_values) > BOX_LINE_TOLERANCE_NM):
-            raise ValueError(
-                f"{path} uses a non-orthorhombic 9-value GRO box with non-negligible "
-                f"off-diagonal terms: {off_diagonal_values.tolist()}"
-            )
-        orthorhombic_box = np.array(box_values[:3], dtype=np.float64)
-    else:
-        raise ValueError(
-            f"{path} uses a non-orthorhombic box with {len(box_values)} values; "
-            "this workflow currently supports only orthorhombic GRO boxes."
-        )
-
-    residue_spans, atom_to_residue_index = _build_residue_spans(residue_ids, residue_names)
-    return _GroSystem(
-        title=title,
-        residue_ids=residue_ids,
-        residue_names=residue_names,
-        atom_names=atom_names,
-        atom_ids=atom_ids,
-        coordinates=coordinates,
-        velocities=velocities if has_velocities else None,
-        box_lengths=orthorhombic_box,
-        residue_spans=tuple(residue_spans),
-        atom_to_residue_index=atom_to_residue_index,
-    )
-
-
-def _build_residue_spans(
-    residue_ids: IntArray,
-    residue_names: list[str],
-) -> tuple[list[_ResidueSpan], IntArray]:
-    """Build contiguous residue spans for atoms read from a GRO file.
-
-    Parameters
-    ----------
-    residue_ids : ndarray
-        Residue identifiers for all atoms.
-    residue_names : list[str]
-        Residue names for all atoms.
-
-    Returns
-    -------
-    tuple[list[_ResidueSpan], ndarray]
-        Residue spans in file order and the atom-to-residue-span index mapping.
-    """
-
-    spans: list[_ResidueSpan] = []
-    atom_to_residue_index = np.empty(residue_ids.shape[0], dtype=np.int32)
-
-    start = 0
-    span_index = -1
-    while start < residue_ids.shape[0]:
-        residue_id = int(residue_ids[start])
-        residue_name = residue_names[start]
-        stop = start + 1
-        while stop < residue_ids.shape[0]:
-            if residue_ids[stop] != residue_id or residue_names[stop] != residue_name:
-                break
-            stop += 1
-
-        span_index += 1
-        spans.append(
-            _ResidueSpan(
-                residue_id=residue_id,
-                residue_name=residue_name,
-                start=start,
-                stop=stop,
-            )
-        )
-        atom_to_residue_index[start:stop] = span_index
-        start = stop
-
-    return spans, atom_to_residue_index
 
 
 def _validate_slit_coordinates(
@@ -1296,13 +1142,27 @@ def _build_output_axis_permutation(normal_axis_index: int) -> tuple[int, int, in
     raise ValueError(f"Unsupported axis index {normal_axis_index}.")
 
 
-def _permute_coordinate_axes(
-    coordinates: FloatArray,
+def _permute_vector_axes(
+    vectors: FloatArray,
     axis_permutation: tuple[int, int, int],
 ) -> FloatArray:
-    """Permute Cartesian coordinate axes."""
+    """Return Cartesian vectors expressed in the permuted output frame.
 
-    return coordinates[:, axis_permutation].copy()
+    Parameters
+    ----------
+    vectors : ndarray
+        Positions in nanometers or velocities in nm/ps, shape ``(N, 3)``.
+    axis_permutation : tuple[int, int, int]
+        Input-axis indices in output-axis order.
+
+    Returns
+    -------
+    ndarray
+        Independent array with permuted components and unchanged units. No
+        translation, wrapping, or mutation of the input is performed.
+    """
+
+    return vectors[:, axis_permutation].copy()
 
 
 def _permute_box_axes(
@@ -2422,121 +2282,6 @@ def _build_guest_filter_summaries(
     return tuple(summaries)
 
 
-def _format_gro_atom_line(
-    residue_id: int,
-    residue_name: str,
-    atom_name: str,
-    atom_id: int,
-    coordinate: FloatArray,
-    velocity: FloatArray | None,
-) -> str:
-    """Format one atom line in GRO syntax."""
-
-    line = (
-        f"{residue_id % 100000:5d}"
-        f"{residue_name[:5]:<5}"
-        f"{atom_name[:5]:>5}"
-        f"{atom_id % 100000:5d}"
-        f"{coordinate[0]:8.3f}"
-        f"{coordinate[1]:8.3f}"
-        f"{coordinate[2]:8.3f}"
-    )
-    if velocity is not None:
-        line += f"{velocity[0]:8.4f}{velocity[1]:8.4f}{velocity[2]:8.4f}"
-    return line + "\n"
-
-
-def _write_system_atoms(
-    handle: TextIO,
-    system: _GroSystem,
-    coordinates: FloatArray,
-    keep_atom_mask: BoolArray | None,
-    write_velocities: bool,
-    starting_residue_id: int,
-    starting_atom_id: int,
-) -> tuple[int, int]:
-    """Write selected atoms from one system to an open GRO file."""
-
-    residue_id = starting_residue_id
-    atom_id = starting_atom_id
-
-    for residue_span in system.residue_spans:
-        if keep_atom_mask is not None and not np.all(keep_atom_mask[residue_span.start:residue_span.stop]):
-            continue
-
-        for atom_index in range(residue_span.start, residue_span.stop):
-            velocity = None
-            if write_velocities:
-                if system.velocities is None:
-                    velocity = np.zeros(3, dtype=np.float64)
-                else:
-                    velocity = system.velocities[atom_index]
-
-            handle.write(
-                _format_gro_atom_line(
-                    residue_id=residue_id,
-                    residue_name=system.residue_names[atom_index],
-                    atom_name=system.atom_names[atom_index],
-                    atom_id=atom_id,
-                    coordinate=coordinates[atom_index],
-                    velocity=velocity,
-                )
-            )
-            atom_id += 1
-
-        residue_id += 1
-
-    return residue_id, atom_id
-
-
-def _write_merged_gro(
-    config: SlitFillConfig,
-    slit_system: _GroSystem,
-    slit_coordinates: FloatArray,
-    guest_system: _GroSystem,
-    guest_coordinates: FloatArray,
-    kept_guest_mask: BoolArray,
-    final_box_lengths: FloatArray,
-) -> tuple[int, int]:
-    """Write the merged GRO file and return the written atom/residue counts."""
-
-    final_atom_count = slit_system.atom_count + int(np.count_nonzero(kept_guest_mask))
-    write_velocities = slit_system.velocities is not None or guest_system.velocities is not None
-
-    final_residue_count = len(slit_system.residue_spans)
-    for residue_span in guest_system.residue_spans:
-        if np.all(kept_guest_mask[residue_span.start:residue_span.stop]):
-            final_residue_count += 1
-
-    with config.output_path.open("w", encoding="utf-8") as handle:
-        handle.write("Merged slit + ring-check filtered guest\n")
-        handle.write(f"{final_atom_count}\n")
-
-        next_residue_id, next_atom_id = _write_system_atoms(
-            handle=handle,
-            system=slit_system,
-            coordinates=slit_coordinates,
-            keep_atom_mask=None,
-            write_velocities=write_velocities,
-            starting_residue_id=1,
-            starting_atom_id=1,
-        )
-        _write_system_atoms(
-            handle=handle,
-            system=guest_system,
-            coordinates=guest_coordinates,
-            keep_atom_mask=kept_guest_mask,
-            write_velocities=write_velocities,
-            starting_residue_id=next_residue_id,
-            starting_atom_id=next_atom_id,
-        )
-        handle.write(
-            f"{final_box_lengths[0]:10.5f}{final_box_lengths[1]:10.5f}{final_box_lengths[2]:10.5f}\n"
-        )
-
-    return final_atom_count, final_residue_count
-
-
 def _build_framework_system(merged_system: _GroSystem, target_resname: str) -> _GroSystem:
     """Extract the non-target framework from a merged slit-plus-guest system."""
 
@@ -3003,6 +2748,11 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     Every cropped residue type is physically screened. ``target_resname``
     selects only the density population and target-specific report fields. The
     GRO, geometry YAML, and log are promoted together after all three succeed.
+    Positions, optional velocities, box lengths, and geometry are expressed in
+    the same output frame with the slit normal on ``z``. Translations and
+    whole-residue wrapping affect positions only. If either input contains
+    velocities, missing velocities in the other input are written as zeros;
+    otherwise velocity columns are omitted. Input arrays are not modified.
     """
 
     config = _resolve_fill_config(config)
@@ -3072,13 +2822,23 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         box_lengths=final_box_lengths,
         axis_permutation=output_axis_permutation,
     )
-    output_slit_coordinates = _permute_coordinate_axes(
-        coordinates=centered_slit_coordinates,
+    output_slit_coordinates = _permute_vector_axes(
+        vectors=centered_slit_coordinates,
         axis_permutation=output_axis_permutation,
     )
-    output_guest_coordinates = _permute_coordinate_axes(
-        coordinates=translated_guest_coordinates,
+    output_guest_coordinates = _permute_vector_axes(
+        vectors=translated_guest_coordinates,
         axis_permutation=output_axis_permutation,
+    )
+    output_slit_velocities = (
+        None
+        if slit_system.velocities is None
+        else _permute_vector_axes(slit_system.velocities, output_axis_permutation)
+    )
+    output_guest_velocities = (
+        None
+        if guest_system.velocities is None
+        else _permute_vector_axes(guest_system.velocities, output_axis_permutation)
     )
     if config.wrap_output:
         output_guest_coordinates = _wrap_residues(
@@ -3199,17 +2959,14 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     metadata_path = config.output_path.with_suffix(".yml")
     final_paths = (config.output_path, metadata_path, config.log_path)
     with staged_output_paths(final_paths) as staging_paths:
-        staged_config = replace(
-            config,
-            output_path=staging_paths[config.output_path],
-            log_path=staging_paths[config.log_path],
-        )
         written_atom_count, written_residue_count = _write_merged_gro(
-            config=staged_config,
+            output_path=staging_paths[config.output_path],
             slit_system=slit_system,
             slit_coordinates=output_slit_coordinates,
+            slit_velocities=output_slit_velocities,
             guest_system=guest_system,
             guest_coordinates=output_guest_coordinates,
+            guest_velocities=output_guest_velocities,
             kept_guest_mask=kept_guest_mask,
             final_box_lengths=output_box_lengths,
         )

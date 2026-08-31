@@ -149,6 +149,12 @@ slit volume, surface support count, and normal RMS roughness. Construction
 writes this unit-explicit schema-v1 geometry to `<system_name>.yml`; filling
 writes the output-frame geometry to `<output_stem>.yml`.
 
+Filling puts the slit normal on the output z axis, applying the same axis
+permutation to coordinates, any input velocities, box lengths, and geometry.
+Centering and whole-residue wrapping change positions only. Velocity columns
+are omitted when neither input contains velocities; when only one does, the
+other input's velocities are written as zeros.
+
 Filling supports mixed guest reservoirs. Cropping, surface-plane filtering,
 the general all-atom cutoff, and applicable ring-crossing checks are applied
 to every residue type. `target_resname` selects only the species used for

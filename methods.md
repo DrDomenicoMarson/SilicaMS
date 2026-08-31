@@ -164,6 +164,14 @@ slit normal.
 The merged GRO, geometry YAML, and report log are staged and promoted as one
 exception-safe output set.
 
+Output axes are permuted to place the slit normal on z. The same permutation
+is applied to slit and guest coordinates, their optional Cartesian velocities
+(nm/ps), box lengths, and geometry metadata. Center-crop translations and
+whole-residue periodic image shifts affect positions only, not velocities.
+Input arrays remain unchanged. If either input contains velocities, all output
+atoms receive velocity columns, with missing input velocities filled by zeros;
+if neither input contains velocities, those columns are omitted.
+
 The general all-atom cutoff is also a construction heuristic. Its `0.10 nm`
 default is deliberately permissive; larger user-selected values remove more
 guests before minimization, while the aromatic-ring crossing checks operate
