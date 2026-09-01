@@ -16,6 +16,7 @@ from silicams._silica_sterics import _StericAtomBatch, _StericGrid
 __all__: list[str] = []
 
 _DIMENSIONS = 3
+_CLEARANCE_NUMERICAL_TOLERANCE_NM = 1e-12
 
 
 def _filtered_steric_batch_arrays(reference_batch, ignored_block_atom_ids=None):
@@ -318,13 +319,15 @@ def _best_pose_positions(
     positions : np.ndarray or None
         Independent native-float coordinates for the first pose attaining the
         greatest clearance. Return ``None`` only when every evaluated pose has
-        negative clearance or no angles are supplied.
+        clearance below the internal numerical tolerance or no angles are
+        supplied.
 
     Notes
     -----
     Inputs and reference state are not mutated. Exact ties preserve the first
-    evaluated pose. Zero and positive clearances are accepted. An empty scored
-    subset has infinite clearance and therefore accepts the first pose.
+    evaluated pose. Positive, zero, and roundoff-negative clearances within
+    ``1e-12`` nanometers are accepted. An empty scored subset has infinite
+    clearance and therefore accepts the first pose.
     """
     base_positions = np.asarray(positions, dtype=float).copy()
     steric_atom_ids = np.asarray(steric_atom_ids, dtype=np.int64).reshape(-1)
@@ -355,6 +358,8 @@ def _best_pose_positions(
             best_clearance = clearance
             best_positions = candidate_positions.copy()
 
-    if best_clearance < 0:
+    # Periodic wrapping and distance reconstruction can make mathematically
+    # exact contact infinitesimally negative in binary64 arithmetic.
+    if best_clearance < -_CLEARANCE_NUMERICAL_TOLERANCE_NM:
         return None
     return best_positions

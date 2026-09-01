@@ -640,7 +640,8 @@ class _SilicaChemistryEngine:
         -------
         mol : Molecule or None
             Deeply independent molecule with selected coordinates, or ``None``
-            when every sampled pose has negative clearance.
+            when every sampled pose has clearance below the placement module's
+            internal numerical tolerance.
 
         Notes
         -----

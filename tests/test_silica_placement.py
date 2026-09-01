@@ -487,20 +487,26 @@ def test_best_pose_rotates_all_atoms_but_scores_selected_subset():
 
 
 @pytest.mark.parametrize(
-    ("distance", "expected_none"),
-    ((0.25, False), (0.24, True)),
+    ("distance", "radius", "expected_none"),
+    (
+        (0.25, 0.125, False),
+        (0.2, 0.1, False),
+        (0.2 - 5e-13, 0.1, False),
+        (0.2 - 2e-12, 0.1, True),
+        (0.19, 0.1, True),
+    ),
 )
-def test_best_pose_accepts_zero_clearance_and_rejects_negative_clearance(
-    distance, expected_none,
+def test_best_pose_uses_numerical_tolerance_at_contact(
+    distance, radius, expected_none,
 ):
-    """Keep the exact nonnegative pose-acceptance threshold."""
+    """Accept roundoff at contact without admitting larger overlaps."""
     reference = _StericAtomBatch(
-        np.array([[distance, 0, 0]]), np.array([0.125]), np.array([7]),
+        np.array([[distance, 0, 0]]), np.array([radius]), np.array([7]),
     )
     result = _best_pose_positions(
         [[0, 0, 0]],
         [0],
-        [0.125],
+        [radius],
         [0, 0, 0],
         [0, 0, 1],
         (0.0,),
