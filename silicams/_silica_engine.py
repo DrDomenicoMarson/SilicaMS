@@ -18,7 +18,7 @@ import silicams.database as db
 import silicams.geometry as geometry
 import silicams.generic as generic
 
-from silicams._numba_kernels import minimum_clearance_against_batch
+from silicams._silica_placement import _best_pose_positions, _rotation_angles
 from silicams._silica_sterics import _MoleculeStericBatch, _StericAtomBatch, _StericGrid
 from silicams.connectivity import AttachmentRecord
 from silicams.dice import Dice
@@ -564,265 +564,6 @@ class _SilicaChemistryEngine:
 
         return _StericAtomBatch.concatenate(batches)
 
-    def _filtered_steric_batch_arrays(
-        self,
-        reference_batch,
-        ignored_block_atom_ids=None,
-    ):
-        """Return steric-batch arrays filtered for one clearance query.
-
-        Parameters
-        ----------
-        reference_batch : _StericAtomBatch
-            Reference steric atoms used during one clearance evaluation.
-        ignored_block_atom_ids : np.ndarray or None, optional
-            Sorted scaffold atom ids that should be removed from the reference
-            batch before the numeric clearance kernel runs.
-
-        Returns
-        -------
-        arrays : tuple[np.ndarray, np.ndarray, np.ndarray]
-            Tuple ``(positions, radii, block_atom_ids)`` ready for the
-            numba-backed clearance kernel.
-        """
-        positions = np.asarray(reference_batch.positions, dtype=np.float64)
-        radii = np.asarray(reference_batch.radii, dtype=np.float64)
-        block_atom_ids = np.asarray(reference_batch.block_atom_ids, dtype=np.int64)
-
-        if radii.size == 0:
-            return positions.reshape(0, self._dim), radii, block_atom_ids
-
-        if ignored_block_atom_ids is not None and ignored_block_atom_ids.size > 0:
-            keep_mask = np.ones(block_atom_ids.shape[0], dtype=bool)
-            for atom_id in ignored_block_atom_ids:
-                keep_mask &= block_atom_ids != atom_id
-            positions = positions[keep_mask]
-            radii = radii[keep_mask]
-            block_atom_ids = block_atom_ids[keep_mask]
-
-        return positions, radii, block_atom_ids
-
-    def _point_clearance_against_batch(
-        self,
-        position,
-        radius,
-        reference_batch,
-        ignored_block_atoms,
-        steric_clearance_scale,
-        box=None,
-        ignored_block_atom_ids=None,
-    ):
-        """Return the minimum clearance from one atom to one reference batch.
-
-        Parameters
-        ----------
-        position : list[float] or np.ndarray
-            Cartesian query position.
-        radius : float
-            Covalent radius of the query atom.
-        reference_batch : _StericAtomBatch
-            Reference atoms checked against the query position.
-        ignored_block_atoms : set[int]
-            Scaffold atom ids that should be ignored.
-        steric_clearance_scale : float
-            Multiplicative factor applied to steric cutoffs.
-        box : np.ndarray or None, optional
-            Periodic box lengths used for minimum-image corrections.
-        ignored_block_atom_ids : np.ndarray or None, optional
-            Sorted integer array of ignored scaffold atom ids. When ``None``,
-            it is derived from ``ignored_block_atoms``.
-
-        Returns
-        -------
-        clearance : float
-            Minimum distance minus steric cutoff. ``inf`` when no reference
-            atoms remain after filtering.
-        """
-        if ignored_block_atom_ids is None:
-            ignored_block_atom_ids = (
-                np.asarray(sorted(ignored_block_atoms), dtype=np.int64)
-                if ignored_block_atoms
-                else np.empty(0, dtype=np.int64)
-            )
-
-        box = np.asarray(self._block.get_box() if box is None else box, dtype=np.float64)
-        positions, radii, block_atom_ids = self._filtered_steric_batch_arrays(
-            reference_batch,
-            ignored_block_atom_ids=ignored_block_atom_ids,
-        )
-        if radii.size == 0:
-            return float("inf")
-
-        return float(
-            minimum_clearance_against_batch(
-                np.asarray(position, dtype=np.float64).reshape(1, self._dim),
-                np.asarray([radius], dtype=np.float64),
-                positions,
-                radii,
-                block_atom_ids,
-                np.empty(0, dtype=np.int64),
-                box,
-                steric_clearance_scale,
-            )
-        )
-
-    def _positions_clearance(
-        self,
-        positions,
-        radii,
-        steric_grid,
-        ignored_block_atoms,
-        steric_clearance_scale,
-        box=None,
-    ):
-        """Return the minimum steric clearance for array-backed positions.
-
-        Parameters
-        ----------
-        positions : np.ndarray
-            Candidate atom positions with shape ``(n, 3)``.
-        radii : np.ndarray
-            Candidate covalent radii with shape ``(n,)``.
-        steric_grid : _StericGrid or None
-            Spatial index used to restrict local steric checks. When ``None``,
-            the full silica state is scanned.
-        ignored_block_atoms : set[int]
-            Scaffold atom ids that should be ignored.
-        steric_clearance_scale : float
-            Multiplicative factor applied to steric cutoffs.
-        box : np.ndarray or None, optional
-            Periodic box lengths used for minimum-image corrections. When
-            ``None``, the current block box is used.
-
-        Returns
-        -------
-        clearance : float
-            Minimum distance minus steric cutoff across all checked pairs.
-        """
-        positions = np.asarray(positions, dtype=np.float64).reshape(-1, self._dim)
-        radii = np.asarray(radii, dtype=np.float64).reshape(-1)
-        if radii.size == 0:
-            return float("inf")
-        box = np.asarray(self._block.get_box() if box is None else box, dtype=np.float64)
-        ignored_block_atom_ids = (
-            np.asarray(sorted(ignored_block_atoms), dtype=np.int64)
-            if ignored_block_atoms
-            else np.empty(0, dtype=np.int64)
-        )
-        empty_ignored_block_atom_ids = np.empty(0, dtype=np.int64)
-
-        if steric_grid is None:
-            reference_positions, reference_radii, reference_block_atom_ids = (
-                self._filtered_steric_batch_arrays(
-                    self._reference_steric_batch(),
-                    ignored_block_atom_ids=ignored_block_atom_ids,
-                )
-            )
-            if reference_radii.size == 0:
-                return float("inf")
-            return float(
-                minimum_clearance_against_batch(
-                    positions,
-                    radii,
-                    reference_positions,
-                    reference_radii,
-                    reference_block_atom_ids,
-                    empty_ignored_block_atom_ids,
-                    box,
-                    steric_clearance_scale,
-                )
-            )
-
-        cell_groups = {}
-        for atom_index, position in enumerate(positions):
-            cell_key = steric_grid._cell_key(position)
-            cell_groups.setdefault(cell_key, []).append(atom_index)
-
-        min_clearance = float("inf")
-        neighbor_cache = {}
-        for cell_key, atom_indices in cell_groups.items():
-            if cell_key not in neighbor_cache:
-                batch = steric_grid.neighbor_batch(positions[atom_indices[0]])
-                neighbor_cache[cell_key] = self._filtered_steric_batch_arrays(
-                    batch,
-                    ignored_block_atom_ids=ignored_block_atom_ids,
-                )
-            reference_positions, reference_radii, reference_block_atom_ids = neighbor_cache[cell_key]
-            if reference_radii.size == 0:
-                continue
-
-            atom_indices = np.asarray(atom_indices, dtype=np.int64)
-            clearance = float(
-                minimum_clearance_against_batch(
-                    positions[atom_indices],
-                    radii[atom_indices],
-                    reference_positions,
-                    reference_radii,
-                    reference_block_atom_ids,
-                    empty_ignored_block_atom_ids,
-                    box,
-                    steric_clearance_scale,
-                )
-            )
-            if clearance < min_clearance:
-                min_clearance = clearance
-
-        return min_clearance
-
-    def _rotation_matrix(self, axis, angle, is_deg=True):
-        """Build the rotation matrix for an arbitrary three-dimensional axis.
-
-        Parameters
-        ----------
-        axis : list[float] or tuple[float, float, float]
-            Rotation-axis vector.
-        angle : float
-            Rotation angle.
-        is_deg : bool, optional
-            True when ``angle`` is given in degrees.
-
-        Returns
-        -------
-        matrix : np.ndarray
-            Rotation matrix with shape ``(3, 3)``.
-        """
-        angle = np.deg2rad(angle) if is_deg else angle
-        normal = np.asarray(geometry.unit(axis), dtype=float)
-        n1, n2, n3 = normal.tolist()
-        c = np.cos(angle)
-        s = np.sin(angle)
-
-        return np.asarray(
-            [
-                [n1 * n1 * (1.0 - c) + c, n1 * n2 * (1.0 - c) - n3 * s, n1 * n3 * (1.0 - c) + n2 * s],
-                [n2 * n1 * (1.0 - c) + n3 * s, n2 * n2 * (1.0 - c) + c, n2 * n3 * (1.0 - c) - n1 * s],
-                [n3 * n1 * (1.0 - c) - n2 * s, n3 * n2 * (1.0 - c) + n1 * s, n3 * n3 * (1.0 - c) + c],
-            ],
-            dtype=float,
-        )
-
-    def _rotate_positions_around_axis(self, positions, origin, axis, angle):
-        """Return positions rotated around one axis passing through ``origin``.
-
-        Parameters
-        ----------
-        positions : np.ndarray
-            Cartesian coordinates with shape ``(n, 3)``.
-        origin : list[float] or np.ndarray
-            One point on the rotation axis.
-        axis : list[float] or tuple[float, float, float]
-            Rotation-axis vector.
-        angle : float
-            Rotation angle in degrees.
-
-        Returns
-        -------
-        positions : np.ndarray
-            Rotated coordinates with shape ``(n, 3)``.
-        """
-        rotation = self._rotation_matrix(axis, angle, is_deg=True)
-        centered = np.asarray(positions, dtype=float) - np.asarray(origin, dtype=float)
-        return centered @ rotation.T + np.asarray(origin, dtype=float)
 
     def _build_steric_grid(self):
         """Build a local steric-search grid for the current silica state.
@@ -854,79 +595,7 @@ class _SilicaChemistryEngine:
 
         return grid
 
-    def _placement_clearance(
-        self,
-        mol,
-        steric_grid=None,
-        ignored_block_atoms=None,
-        steric_clearance_scale=_STERIC_CLEARANCE_SCALE,
-        box=None,
-    ):
-        """Return the minimum steric clearance of a candidate attached pose.
 
-        Parameters
-        ----------
-        mol : Molecule
-            Candidate attached molecule.
-        steric_grid : _StericGrid or None, optional
-            Spatial index used to restrict the steric check to local
-            neighboring atoms. When ``None``, the full current structure is
-            scanned directly.
-        ignored_block_atoms : set[int] or None, optional
-            Scaffold atom ids that should be ignored during the clash check.
-        steric_clearance_scale : float, optional
-            Multiplicative factor applied to the sum of covalent radii when
-            estimating the steric cutoff.
-        box : np.ndarray or None, optional
-            Periodic box lengths used for minimum-image corrections. When
-            ``None``, the current block box is used.
-
-        Returns
-        -------
-        clearance : float
-            Minimum distance minus the steric cutoff across all checked pairs.
-            Positive values indicate a clash-free pose.
-        """
-        ignored_block_atoms = set() if ignored_block_atoms is None else set(ignored_block_atoms)
-        molecule_batch = self._molecule_steric_batch(mol)
-        return self._positions_clearance(
-            molecule_batch.positions,
-            molecule_batch.radii,
-            steric_grid,
-            ignored_block_atoms,
-            steric_clearance_scale,
-            box=box,
-        )
-
-    def _rotation_angles(self, rotate_step_deg):
-        """Return the sampled axis-rotation angles for one pose search.
-
-        Parameters
-        ----------
-        rotate_step_deg : float
-            Angular step in degrees used to sample rotations around the mount
-            axis.
-
-        Returns
-        -------
-        angles : tuple[float, ...]
-            Rotation angles covering one full turn, including ``0``.
-
-        Raises
-        ------
-        ValueError
-            Raised when ``rotate_step_deg`` is not strictly positive.
-        """
-        if rotate_step_deg <= 0:
-            raise ValueError("Attachment rotation step must be greater than zero.")
-
-        angles = []
-        angle = 0.0
-        while angle < 360.0:
-            angles.append(round(angle, 10))
-            angle += rotate_step_deg
-
-        return tuple(angles if angles else [0.0])
 
     def _optimize_attachment_pose(
         self,
@@ -940,69 +609,73 @@ class _SilicaChemistryEngine:
         steric_clearance_scale,
         box=None,
     ):
-        """Rotate one candidate pose around the mount axis to reduce clashes.
+        """Return an independent molecule in the best accepted numerical pose.
 
         Parameters
         ----------
         mol : Molecule
-            Candidate attached molecule already aligned to ``surf_axis`` and
-            translated to the target site.
+            Candidate molecule already aligned and translated to the target
+            attachment site.
         mount : int
-            Mount atom index.
-        surf_axis : list[float]
-            Surface-normal vector used as the rotation axis.
+            Local atom index whose position defines the rotation origin.
+        surf_axis : array-like
+            Three-dimensional surface-normal vector defining the rotation axis.
         ignored_block_atoms : set[int]
-            Scaffold atom ids ignored during the steric check.
+            Scaffold identifiers excluded during clearance evaluation.
         steric_grid : _StericGrid or None
-            Spatial index used to evaluate only local steric clashes.
+            Local periodic reference. When ``None``, collect one read-only full
+            reference snapshot for this pose search.
         is_rotate : bool
-            True to scan several rotations around the mount axis.
+            Whether to sample rotations around the mount axis.
         rotate_step_deg : float
-            Angular step in degrees used during the rotation scan.
+            Angular increment in degrees. It is evaluated only when
+            ``is_rotate`` is true.
         steric_clearance_scale : float
-            Multiplicative factor applied to the sum of covalent radii when
-            estimating the steric cutoff.
-        box : np.ndarray or None, optional
-            Periodic box lengths used for minimum-image corrections. When
-            ``None``, the current block box is used.
+            Multiplier applied to summed covalent radii.
+        box : array-like or None, optional
+            Orthorhombic box lengths in nanometers. Defaults to the active block
+            box.
 
         Returns
         -------
         mol : Molecule or None
-            Best non-clashing pose, or ``None`` when every sampled pose clashes.
+            Deeply independent molecule with selected coordinates, or ``None``
+            when every sampled pose has negative clearance.
+
+        Notes
+        -----
+        The input molecule and live silica state are not mutated. Chemistry
+        owns radius/reference extraction and molecule copying; array transforms,
+        clearance scoring, and tie-breaking belong to the placement module.
         """
-        angles = self._rotation_angles(rotate_step_deg) if is_rotate else (0.0,)
-        best_clearance = float("-inf")
-        best_positions = None
+        angles = _rotation_angles(rotate_step_deg) if is_rotate else (0.0,)
         base_positions = np.asarray(mol.positions_view(), dtype=float).copy()
         molecule_batch = self._molecule_steric_batch(mol)
         mount_position = base_positions[mount].copy()
-        box = np.asarray(self._block.get_box() if box is None else box, dtype=float)
-
-        for angle in angles:
-            candidate_positions = (
-                base_positions
-                if angle == 0
-                else self._rotate_positions_around_axis(
-                    base_positions,
-                    mount_position,
-                    surf_axis,
-                    angle,
-                )
+        box = np.asarray(
+            self._block.get_box() if box is None else box,
+            dtype=float,
+        )
+        reference = steric_grid
+        if reference is None:
+            reference = (
+                self._reference_steric_batch()
+                if molecule_batch.radii.size > 0
+                else _StericAtomBatch.empty()
             )
-            clearance = self._positions_clearance(
-                candidate_positions[molecule_batch.atom_ids],
-                molecule_batch.radii,
-                steric_grid,
-                ignored_block_atoms,
-                steric_clearance_scale,
-                box=box,
-            )
-            if clearance > best_clearance:
-                best_clearance = clearance
-                best_positions = candidate_positions.copy()
-
-        if best_clearance < 0:
+        best_positions = _best_pose_positions(
+            base_positions,
+            molecule_batch.atom_ids,
+            molecule_batch.radii,
+            mount_position,
+            surf_axis,
+            angles,
+            reference,
+            ignored_block_atoms,
+            steric_clearance_scale,
+            box,
+        )
+        if best_positions is None:
             return None
         best_molecule = copy.deepcopy(mol)
         best_molecule.positions_view()[:] = best_positions
