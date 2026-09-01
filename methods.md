@@ -92,10 +92,12 @@ Siloxane bridge candidates are chosen from eligible surface-silicon pairs.
 Candidate-pair distances, bridge vectors, adjacency, and steric clearances use
 one orthorhombic minimum-image convention, including pairs that cross a box
 face. Candidate oxygen placements are generated perpendicular to the pair
-axis, wrapped through the periodic cell, and rejected when local steric
-clearance is negative. Default ordering is deterministic. Setting
-`random_seed` randomizes chemically equivalent bridge and attachment choices
-reproducibly.
+axis and wrapped through the periodic cell. A local steric prescreen orders the
+candidates, after which a full-scaffold clearance check accepts the first
+candidate whose local and global clearances are no more than ``1e-12`` nm below
+zero. This tolerance absorbs binary64 roundoff at exact contact. Default
+ordering is deterministic. Setting `random_seed` randomizes chemically
+equivalent bridge and attachment choices reproducibly.
 
 The physical slit geometry is fitted from the normal coordinates of the
 initial exposed surface-silicon sites. Sites are divided into two periodic face

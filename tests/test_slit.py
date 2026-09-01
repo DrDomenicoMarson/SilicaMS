@@ -18,6 +18,7 @@ import silicams.slit_targets as target_mod
 import silicams.utils as utils
 import silicams.writers.common as snapshot_mod
 from silicams.connectivity import AssembledStructureGraph, ConnectivityValidationReport
+from silicams._silica_placement import _bridge_clearance_from_arrays
 import silicams.topology as topo_mod
 from silicams._version import __version__ as EXPECTED_VERSION
 
@@ -508,6 +509,24 @@ def naive_bridge_clearance(kit, pair, bridge_position, local_only):
     return float(np.min(clearances))
 
 
+def production_bridge_clearance(kit, pair, bridge_position, local_only):
+    """Evaluate one live-system bridge candidate through extracted numerics."""
+    cache = slit_mod._build_bridge_steric_cache(kit, pair)
+    positions = cache.local_positions if local_only else cache.global_positions
+    min_distances = (
+        cache.local_min_distances
+        if local_only
+        else cache.global_min_distances
+    )
+    return _bridge_clearance_from_arrays(
+        bridge_position,
+        cache.box,
+        positions,
+        min_distances,
+        slit_mod._BRIDGE_STERIC_DISTANCE_CUTOFF_NM,
+    )
+
+
 def export_shared_functionalized_result(
     context,
     output_dir,
@@ -882,11 +901,15 @@ class TestAmorphousSlitPreparation:
 
         assert pair is not None
         assert bridge_position is not None
-        assert slit_mod._bridge_steric_score(system, pair, bridge_position) == pytest.approx(
+        assert production_bridge_clearance(
+            system, pair, bridge_position, local_only=True,
+        ) == pytest.approx(
             naive_bridge_clearance(system, pair, bridge_position, local_only=True),
             abs=1e-12,
         )
-        assert slit_mod._bridge_global_clearance(system, pair, bridge_position) == pytest.approx(
+        assert production_bridge_clearance(
+            system, pair, bridge_position, local_only=False,
+        ) == pytest.approx(
             naive_bridge_clearance(system, pair, bridge_position, local_only=False),
             abs=1e-12,
         )
@@ -921,8 +944,12 @@ class TestAmorphousSlitPreparation:
         )
         invalid_position = system.atom_position(reference_atom_id)
 
-        local_score = slit_mod._bridge_steric_score(system, pair, invalid_position)
-        global_score = slit_mod._bridge_global_clearance(system, pair, invalid_position)
+        local_score = production_bridge_clearance(
+            system, pair, invalid_position, local_only=True,
+        )
+        global_score = production_bridge_clearance(
+            system, pair, invalid_position, local_only=False,
+        )
         assert local_score < 0
         assert global_score < 0
         assert local_score == pytest.approx(

@@ -1,5 +1,6 @@
 """Direct numerical contracts for construction clearance and pose selection."""
 
+from dataclasses import FrozenInstanceError
 from itertools import product
 from types import SimpleNamespace
 
@@ -11,7 +12,14 @@ import silicams.generic as generic
 import silicams._silica_placement as placement
 from silicams._numba_kernels import minimum_clearance_against_batch
 from silicams._silica_placement import (
+    _BridgeStericCache,
+    _best_bridge_position,
     _best_pose_positions,
+    _bridge_base_direction,
+    _bridge_candidate_positions,
+    _bridge_clearance_from_arrays,
+    _bridge_pair_frame,
+    _clearance_is_acceptable,
     _filtered_steric_batch_arrays,
     _positions_clearance,
     _rotate_positions_around_axis,
@@ -89,8 +97,215 @@ def _copy_batch(batch):
 def test_placement_helpers_remain_private():
     """Keep the numerical extraction out of the supported package API."""
     assert placement.__all__ == []
-    for name in ("_positions_clearance", "_filtered_steric_batch_arrays"):
+    for name in (
+        "_positions_clearance",
+        "_filtered_steric_batch_arrays",
+        "_best_bridge_position",
+        "_BridgeStericCache",
+    ):
         assert not hasattr(sms, name)
+
+
+@pytest.mark.parametrize(
+    ("clearance", "expected"),
+    (
+        (0.1, True),
+        (0.0, True),
+        (-5e-13, True),
+        (-2e-12, False),
+        (float("inf"), True),
+        (float("-inf"), False),
+        (float("nan"), False),
+    ),
+)
+def test_clearance_acceptance_uses_dimensioned_roundoff_tolerance(
+    clearance, expected,
+):
+    """Accept only nonnegative and roundoff-negative clearances."""
+    assert _clearance_is_acceptable(clearance) is expected
+
+
+def _bridge_cache(
+    local_positions=(),
+    local_min_distances=(),
+    global_positions=(),
+    global_min_distances=(),
+    box=(2.0, 3.0, 4.0),
+):
+    """Return one independently assembled bridge steric cache."""
+    return _BridgeStericCache(
+        box=np.asarray(box, dtype=float),
+        local_positions=np.asarray(local_positions, dtype=float).reshape(-1, 3),
+        local_min_distances=np.asarray(local_min_distances, dtype=float),
+        global_positions=np.asarray(global_positions, dtype=float).reshape(-1, 3),
+        global_min_distances=np.asarray(global_min_distances, dtype=float),
+    )
+
+
+def test_bridge_steric_cache_freezes_fields_but_not_owned_arrays():
+    """Keep a frozen record without claiming deep array immutability."""
+    cache = _bridge_cache()
+    with pytest.raises(FrozenInstanceError):
+        cache.box = np.ones(3)
+    cache.box[0] = 5.0
+    assert cache.box.tolist() == [5.0, 3.0, 4.0]
+
+
+def test_bridge_pair_frame_wraps_periodic_midpoint_without_mutating_inputs():
+    """Construct the pair frame across a seam in a non-cubic box."""
+    position_a = np.array([1.875, 1.0, 1.0], dtype=np.float32)
+    position_b = np.array([0.125, 1.0, 1.0], dtype=np.float32)
+    box = np.array([2.0, 3.0, 4.0], dtype=np.float32)
+    source = tuple(value.copy() for value in (position_a, position_b, box))
+
+    center, axis = _bridge_pair_frame(position_a, position_b, box)
+
+    np.testing.assert_allclose(center, [0.0, 1.0, 1.0], atol=1e-15)
+    np.testing.assert_allclose(axis, [1.0, 0.0, 0.0], atol=1e-15)
+    for actual, expected in zip((position_a, position_b, box), source):
+        np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ("axis", "normals", "expected"),
+    (
+        ([1, 0, 0], ([0, 0, 1], [0, 0, 1]), [0, 0, 1]),
+        ([1, 0, 0], ([1, 0, 0], [1, 0, 0]), [0, 0, 1]),
+        ([0, 1, 0], ([0, 1, 0], [0, 1, 0]), [0, 0, -1]),
+    ),
+)
+def test_bridge_base_direction_preserves_surface_and_fallback_rules(
+    axis, normals, expected,
+):
+    """Use the projected normals or the deterministic fallback direction."""
+    np.testing.assert_allclose(
+        _bridge_base_direction(axis, normals),
+        expected,
+        atol=1e-15,
+    )
+
+
+def test_bridge_candidates_preserve_rotation_order_and_periodic_wrapping():
+    """Generate every candidate in order without changing source arrays."""
+    center = np.array([0.95, 1.0, 2.95], dtype=float)
+    axis = np.array([1.0, 0.0, 0.0], dtype=float)
+    normals = (
+        np.array([0.0, 0.0, 1.0]),
+        np.array([0.0, 0.0, 1.0]),
+    )
+    box = np.array([1.0, 2.0, 3.0], dtype=float)
+    source = tuple(value.copy() for value in (center, axis, *normals, box))
+
+    candidates = _bridge_candidate_positions(
+        center,
+        axis,
+        normals,
+        box,
+        0.1,
+        (0.0, 90.0, -90.0, 180.0),
+    )
+
+    np.testing.assert_allclose(
+        candidates,
+        (
+            [0.95, 1.0, 0.05],
+            [0.95, 0.9, 2.95],
+            [0.95, 1.1, 2.95],
+            [0.95, 1.0, 2.85],
+        ),
+        atol=1e-15,
+    )
+    for actual, expected in zip((center, axis, *normals, box), source):
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_bridge_clearance_handles_empty_distant_and_periodic_references():
+    """Preserve the cutoff result and periodic distance calculation."""
+    cutoff = 0.3
+    empty = np.empty((0, 3), dtype=float)
+    assert _bridge_clearance_from_arrays(
+        [0, 0, 0], [2, 3, 4], empty, np.empty(0), cutoff,
+    ) == cutoff
+    assert _bridge_clearance_from_arrays(
+        [0, 0, 0],
+        [2, 3, 4],
+        np.array([[0.8, 0, 0]]),
+        np.array([0.1]),
+        cutoff,
+    ) == cutoff
+    assert _bridge_clearance_from_arrays(
+        [0, 0, 0],
+        [2, 3, 4],
+        np.array([[4.125, 0, 0]]),
+        np.array([0.125]),
+        cutoff,
+    ) == pytest.approx(0.0, abs=1e-15)
+
+
+def test_bridge_clearance_preserves_first_negative_reference_row():
+    """Keep the established first-overlap reduction rather than the minimum."""
+    clearance = _bridge_clearance_from_arrays(
+        [0, 0, 0],
+        [2, 3, 4],
+        np.array([[0.125, 0, 0], [0.0625, 0, 0]]),
+        np.array([0.25, 0.25]),
+        0.3,
+    )
+    assert clearance == pytest.approx(-0.125, abs=1e-15)
+
+
+def test_best_bridge_orders_locally_then_requires_global_acceptance():
+    """Reject the locally best clash and accept the next-ranked candidate."""
+    candidates = [
+        [0.25, 0, 0],
+        [0.2, 0, 0],
+        [0.15, 0, 0],
+    ]
+    cache = _bridge_cache(
+        local_positions=[[0, 0, 0]],
+        local_min_distances=[0.1],
+        global_positions=[[0.25, 0, 0]],
+        global_min_distances=[0.05],
+        box=[2, 2, 2],
+    )
+    selected = _best_bridge_position(candidates, cache, 0.3)
+    assert selected is candidates[1]
+
+
+def test_best_bridge_keeps_first_tie_and_accepts_roundoff_contact():
+    """Keep stable tie ordering and share the exact-contact tolerance."""
+    tied_candidates = ([0.4, 0, 0], [0.6, 0, 0])
+    assert _best_bridge_position(
+        tied_candidates, _bridge_cache(), 0.3,
+    ) is tied_candidates[0]
+
+    contact_candidate = [0, 0, 0]
+    contact_cache = _bridge_cache(
+        local_positions=[[0.2, 0, 0]],
+        local_min_distances=[0.2],
+        box=[2, 2, 2],
+    )
+    assert _best_bridge_position(
+        [contact_candidate], contact_cache, 0.3,
+    ) is contact_candidate
+
+
+@pytest.mark.parametrize(
+    "cache",
+    (
+        _bridge_cache(
+            local_positions=[[0, 0, 0]],
+            local_min_distances=[0.1],
+        ),
+        _bridge_cache(
+            global_positions=[[0, 0, 0]],
+            global_min_distances=[0.1],
+        ),
+    ),
+)
+def test_best_bridge_rejects_local_or_global_overlap(cache):
+    """Return ``None`` when either screening stage finds a real overlap."""
+    assert _best_bridge_position([[0, 0, 0]], cache, 0.3) is None
 
 
 def test_batch_filter_normalizes_dtypes_without_mutating_source():
