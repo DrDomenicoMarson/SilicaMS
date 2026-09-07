@@ -181,6 +181,12 @@ vocabulary. Functional groups such as `TPS`/`TPSG` and co-guests such as water
 or ions must be classified explicitly. Supplying any `--framework-resname`
 options replaces the default set; `--mobile-resname` is repeatable. Overlapping
 selectors, unclassified residues, or an empty resolved framework are errors.
+The standalone report path must also be distinct from both the merged GRO and
+an explicitly supplied geometry file. Canonical aliases, symlinks, and existing
+hard links are rejected before analysis. Reports are written to a temporary
+file beside their destination and atomically promoted only after the complete
+text has been produced, preserving an existing report after a handled write or
+promotion failure.
 
 Numeric configuration values are validated before construction: NaN and
 infinite values are rejected, and counts, indices, repetitions, and seeds must

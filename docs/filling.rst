@@ -111,6 +111,13 @@ Density estimates retain the raw probe-radius, seed, fraction, volume, and
 density values. Any downstream plotting workflow must export companion plot
 data as CSV.
 
+The standalone density report cannot use the same file as its merged GRO or
+explicit geometry input. Canonical aliases, symbolic links, and existing hard
+links are rejected before analysis. The report is written to a same-directory
+staging file and atomically promoted only after the complete write succeeds, so
+a handled write or promotion failure preserves an existing report and both
+scientific inputs.
+
 Python example
 --------------
 

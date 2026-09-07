@@ -741,6 +741,107 @@ def test_standalone_density_api_cli_defaults_and_report(
     assert captured.err == ""
 
 
+@pytest.mark.parametrize("alias_kind", ("direct", "lexical", "symlink", "hardlink"))
+def test_density_report_cannot_alias_merged_input(
+    density_case,
+    alias_kind,
+) -> None:
+    """Reject direct and filesystem aliases before modifying the input GRO."""
+
+    input_path = density_case.input_path
+    if alias_kind == "direct":
+        report_path = input_path
+    elif alias_kind == "lexical":
+        report_path = input_path.parent / "missing" / ".." / input_path.name
+    else:
+        report_path = input_path.with_name(f"{alias_kind}-alias.gro")
+        if alias_kind == "symlink":
+            report_path.symlink_to(input_path)
+        else:
+            report_path.hardlink_to(input_path)
+
+    original_input = input_path.read_bytes()
+    with pytest.raises(ValueError, match="must differ from the merged GRO input"):
+        density_mod.estimate_guest_density(
+            density_mod.SlitDensityConfig(
+                input_path=input_path,
+                log_path=report_path,
+                slit_geometry=density_case.geometry,
+                target_resname="SOL",
+                framework_resnames=("SIL", "ADS", "ION"),
+                density_probe_radii_nm=(0.0,),
+                density_sample_count=10,
+                density_seed_count=1,
+                random_seed=1,
+            )
+        )
+    assert input_path.read_bytes() == original_input
+
+
+def test_default_density_report_cannot_alias_geometry_input(density_case) -> None:
+    """Validate the default resolved report path against explicit geometry input."""
+
+    geometry_path = density_case.input_path.with_name("merged_density.log")
+    geometry_io._write_slit_geometry_metadata(
+        geometry_path,
+        density_case.geometry,
+        0.0,
+    )
+    original_geometry = geometry_path.read_bytes()
+    config = density_mod.SlitDensityConfig(
+        input_path=density_case.input_path,
+        slit_geometry_path=geometry_path,
+        target_resname="SOL",
+        framework_resnames=("SIL", "ADS", "ION"),
+        density_probe_radii_nm=(0.0,),
+        density_sample_count=10,
+        density_seed_count=1,
+        random_seed=1,
+    )
+
+    with pytest.raises(ValueError, match="must differ from the slit-geometry input"):
+        density_mod.estimate_guest_density(config)
+    assert geometry_path.read_bytes() == original_geometry
+
+
+def test_density_report_staging_preserves_existing_report_on_write_failure(
+    density_case,
+    monkeypatch,
+) -> None:
+    """Leave the previous report intact when writing its staged replacement fails."""
+
+    report_path = density_case.input_path.with_name("existing_density.log")
+    report_path.write_text("previous report\n", encoding="utf-8")
+    original_write_text = Path.write_text
+
+    def fail_staged_write(path, *args, **kwargs):
+        """Raise only for the density report's same-directory staging file."""
+
+        if ".silicams-stage-" in path.name:
+            raise OSError("controlled staged report failure")
+        return original_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_staged_write)
+    with pytest.raises(OSError, match="controlled staged report failure"):
+        density_mod.estimate_guest_density(
+            density_mod.SlitDensityConfig(
+                input_path=density_case.input_path,
+                log_path=report_path,
+                slit_geometry=density_case.geometry,
+                target_resname="SOL",
+                framework_resnames=("SIL", "ADS", "ION"),
+                density_probe_radii_nm=(0.0,),
+                density_sample_count=10,
+                density_seed_count=1,
+                random_seed=1,
+            )
+        )
+
+    assert report_path.read_text(encoding="utf-8") == "previous report\n"
+    assert not list(report_path.parent.glob("*.silicams-stage-*"))
+    assert not list(report_path.parent.glob("*.silicams-backup-*"))
+
+
 def test_standalone_density_rejects_missing_target_before_writing(density_case) -> None:
     """Report available residues and leave the report unwritten on invalid input."""
 

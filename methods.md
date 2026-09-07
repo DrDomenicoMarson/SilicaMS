@@ -200,6 +200,13 @@ all non-target guests require explicit classification. Selectors must be
 disjoint and exhaustive for the residue names present, so ambiguous inputs
 fail instead of being assigned by complement.
 
+The resolved standalone density-report path is validated against both the
+merged GRO input and any explicit geometry input before either file is parsed.
+Canonical path aliases, symbolic links, and existing hard links are treated as
+collisions. Report text is first written to a same-directory staging file and
+then atomically promoted; a handled staging or promotion failure preserves any
+previous report and never replaces either scientific input.
+
 A point is probe-free when it lies outside every explicitly selected framework
 van der Waals radius enlarged by the probe radius under orthorhombic periodic
 boundary conditions. Mobile species, including non-target mixture components,
