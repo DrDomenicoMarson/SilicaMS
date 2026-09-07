@@ -30,6 +30,7 @@ from .slit_geometry import (
 )
 
 FloatArray = NDArray[np.float64]
+BoolArray = NDArray[np.bool_]
 
 DEFAULT_DENSITY_PROBE_RADII_NM = (0.00, 0.14, 0.20)
 DEFAULT_FRAMEWORK_RESNAMES = ("OM", "SI", "SL", "SLG")
@@ -40,6 +41,7 @@ __all__ = [
     "DEFAULT_DENSITY_PROBE_RADII_NM",
     "DEFAULT_FRAMEWORK_RESNAMES",
     "DensityProbeEstimate",
+    "TargetPopulationSummary",
     "DensityEstimate",
     "SlitDensityConfig",
     "SlitDensityReport",
@@ -62,7 +64,7 @@ class DensityProbeEstimate:
     probe_free_volumes_nm3 : tuple[float, ...]
         Probe-free slit volumes measured for each repeat.
     probe_free_densities_g_cm3 : tuple[float, ...]
-        Densities derived from the probe-free slit volumes.
+        Interval-assigned target mass divided by each probe-free slit volume.
     probe_free_fraction_mean : float
         Mean probe-free fraction across repeats.
     probe_free_fraction_std : float
@@ -91,22 +93,69 @@ class DensityProbeEstimate:
 
 
 @dataclass(frozen=True)
+class TargetPopulationSummary:
+    """Target-residue population assigned to the density control volumes.
+
+    Parameters
+    ----------
+    total_molecule_count : int
+        Number of selected target residues in the full periodic box.
+    total_atom_count : int
+        Number of atoms belonging to those full-box target residues.
+    interval_molecule_count : int
+        Number of selected target residues whose periodically reconstructed
+        center of mass lies inside the signed-padded mean-plane interval.
+    interval_atom_count : int
+        Number of atoms belonging to the interval-assigned target residues.
+
+    Notes
+    -----
+    Each molecule is assigned as a whole through its center of mass. Atom
+    counts therefore describe the assigned molecular populations rather than
+    the number of individual atoms geometrically inside the interval.
+    """
+
+    total_molecule_count: int
+    total_atom_count: int
+    interval_molecule_count: int
+    interval_atom_count: int
+
+    @property
+    def outside_interval_molecule_count(self) -> int:
+        """Return the number of full-box target residues outside the interval."""
+
+        return self.total_molecule_count - self.interval_molecule_count
+
+    @property
+    def outside_interval_atom_count(self) -> int:
+        """Return atoms belonging to target residues assigned outside the interval."""
+
+        return self.total_atom_count - self.interval_atom_count
+
+
+@dataclass(frozen=True)
 class DensityEstimate:
-    """Density metrics derived for the retained guest population.
+    """Density metrics derived for full-box and slit-interval target populations.
 
     Parameters
     ----------
     guest_molecule_mass_da : float
         Mass of one target guest molecule in daltons.
+    target_population : TargetPopulationSummary
+        Full-box and padded-interval target population counts.
     total_guest_mass_da : float
-        Total retained guest mass in daltons.
+        Full-box selected target mass in daltons.
+    interval_guest_mass_da : float
+        Target mass assigned to the padded slit interval in daltons.
     box_volume_nm3 : float
         Full periodic box volume in cubic nanometers.
     box_average_density_g_cm3 : float
-        Guest density obtained by dividing the retained guest mass by the full
-        periodic box volume.
+        Target density obtained by dividing the full-box target mass by the
+        full periodic box volume.
     geometric_slit_volume_nm3 : float
         Geometric mean-plane slit volume after signed surface-plane padding.
+    geometric_slit_density_g_cm3 : float
+        Interval target mass divided by the padded geometric slit volume.
     surface_plane_padding_nm : float
         Signed surface-plane padding used for geometric and probe-free volumes.
     sample_count_per_seed : int
@@ -118,10 +167,13 @@ class DensityEstimate:
     """
 
     guest_molecule_mass_da: float
+    target_population: TargetPopulationSummary
     total_guest_mass_da: float
+    interval_guest_mass_da: float
     box_volume_nm3: float
     box_average_density_g_cm3: float
     geometric_slit_volume_nm3: float
+    geometric_slit_density_g_cm3: float
     surface_plane_padding_nm: float
     sample_count_per_seed: int
     seed_count: int
@@ -235,10 +287,6 @@ class SlitDensityReport:
 
     Parameters
     ----------
-    guest_molecule_count : int
-        Number of target guest residues found in the merged structure.
-    guest_atom_count : int
-        Number of target guest atoms found in the merged structure.
     framework_atom_count : int
         Number of explicitly selected atoms treated as the slit framework.
     framework_residue_count : int
@@ -254,8 +302,6 @@ class SlitDensityReport:
         Density metrics derived for the target guest population.
     """
 
-    guest_molecule_count: int
-    guest_atom_count: int
     framework_atom_count: int
     framework_residue_count: int
     framework_resnames: tuple[str, ...]
@@ -328,9 +374,7 @@ def _residue_counts_by_name(system: _GroSystem) -> dict[str, int]:
 
     counts: dict[str, int] = {}
     for residue_span in system.residue_spans:
-        counts[residue_span.residue_name] = (
-            counts.get(residue_span.residue_name, 0) + 1
-        )
+        counts[residue_span.residue_name] = counts.get(residue_span.residue_name, 0) + 1
     return counts
 
 
@@ -448,6 +492,8 @@ def _validate_density_config(
             f"Residue name {config.target_resname!r} was not found in {config.input_path}. "
             f"Available residue names: {', '.join(available_residues)}"
         )
+
+
 def _compute_target_residue_mass_da(
     guest_system: _GroSystem,
     target_resname: str,
@@ -489,6 +535,118 @@ def _compute_target_residue_mass_da(
 
     raise ValueError(
         f"No residue named {target_resname!r} was found for mass estimation."
+    )
+
+
+def _select_target_population(
+    guest_system: _GroSystem,
+    guest_coordinates: FloatArray,
+    slit_geometry: PeriodicSlitGeometry,
+    surface_plane_padding_nm: float,
+    target_resname: str,
+    selected_residue_mask: BoolArray | None = None,
+) -> TargetPopulationSummary:
+    """Assign selected target residues to the padded slit by center of mass.
+
+    Parameters
+    ----------
+    guest_system : _GroSystem
+        Source atom names and contiguous residue spans.
+    guest_coordinates : ndarray
+        Guest coordinates in nanometers, shape ``(N, 3)``, expressed in the
+        same frame as ``slit_geometry``.
+    slit_geometry : PeriodicSlitGeometry
+        Periodic mean-plane interval and orthorhombic box.
+    surface_plane_padding_nm : float
+        Signed padding applied to both mean planes in nanometers.
+    target_resname : str
+        Exact residue name identifying the target species.
+    selected_residue_mask : ndarray or None, optional
+        Boolean mask over residue spans. ``None`` selects every residue; filling
+        supplies its final retained-residue mask so full-box counts describe
+        only molecules written to the output.
+
+    Returns
+    -------
+    TargetPopulationSummary
+        Full-box and interval-assigned molecule and atom counts.
+
+    Raises
+    ------
+    ValueError
+        Raised when coordinate or mask shapes are inconsistent, coordinates
+        are non-finite, or a target atom name has no supported elemental mass.
+
+    Notes
+    -----
+    Each residue is reconstructed around its first atom with orthorhombic
+    minimum-image displacements before its mass-weighted center is calculated.
+    The center is then classified by the same periodic signed-padded interval
+    used for geometric and probe-free volume sampling.
+    """
+
+    coordinates = np.asarray(guest_coordinates, dtype=np.float64)
+    if coordinates.shape != (guest_system.atom_count, 3):
+        raise ValueError("Guest coordinates must have shape (N, 3).")
+    if not np.all(np.isfinite(coordinates)):
+        raise ValueError("Guest coordinates must be finite.")
+
+    residue_count = len(guest_system.residue_spans)
+    if selected_residue_mask is None:
+        selected = np.ones(residue_count, dtype=bool)
+    else:
+        selected = np.asarray(selected_residue_mask)
+        if selected.shape != (residue_count,) or selected.dtype.kind != "b":
+            raise ValueError("Selected residue mask must be boolean with shape (R,).")
+
+    total_molecule_count = 0
+    total_atom_count = 0
+    interval_molecule_count = 0
+    interval_atom_count = 0
+    box_lengths = np.asarray(slit_geometry.box_lengths_nm, dtype=np.float64)
+
+    for residue_index, residue_span in enumerate(guest_system.residue_spans):
+        if not selected[residue_index] or residue_span.residue_name != target_resname:
+            continue
+
+        atom_count = residue_span.stop - residue_span.start
+        total_molecule_count += 1
+        total_atom_count += atom_count
+        residue_coordinates = coordinates[residue_span.start : residue_span.stop]
+        atom_masses_da = np.array(
+            [
+                db.get_mass(
+                    _infer_element_from_atom_name(guest_system.atom_names[index])
+                )
+                for index in range(residue_span.start, residue_span.stop)
+            ],
+            dtype=np.float64,
+        )
+        anchor_coordinate = residue_coordinates[0]
+        whole_residue_coordinates = anchor_coordinate + minimum_image_displacements(
+            anchor_coordinate,
+            residue_coordinates,
+            box_lengths,
+        )
+        center_of_mass_nm = np.average(
+            whole_residue_coordinates,
+            axis=0,
+            weights=atom_masses_da,
+        )
+        if bool(
+            slit_geometry.contains_positions(
+                center_of_mass_nm,
+                surface_plane_padding_nm,
+            )
+        ):
+            interval_molecule_count += 1
+            interval_atom_count += atom_count
+
+    return TargetPopulationSummary(
+        total_molecule_count=total_molecule_count,
+        total_atom_count=total_atom_count,
+        interval_molecule_count=interval_molecule_count,
+        interval_atom_count=interval_atom_count,
     )
 
 
@@ -673,13 +831,13 @@ def _compute_density_estimate(
     slit_geometry: PeriodicSlitGeometry,
     surface_plane_padding_nm: float,
     target_resname: str,
-    remaining_guest_molecules: int,
+    target_population: TargetPopulationSummary,
     probe_radii_nm: tuple[float, ...],
     sample_count: int,
     seed_count: int,
     random_seed: int | None,
 ) -> DensityEstimate:
-    """Compute box-average and probe-free slit guest-density estimates.
+    """Compute box-average, geometric-slit, and probe-free density estimates.
 
     Parameters
     ----------
@@ -696,8 +854,8 @@ def _compute_density_estimate(
         Signed padding applied to both mean surface planes in nanometers.
     target_resname : str
         Residue name used to identify one guest molecule.
-    remaining_guest_molecules : int
-        Number of guest molecules included in the mass.
+    target_population : TargetPopulationSummary
+        Full-box and padded-interval target population counts.
     probe_radii_nm : tuple[float, ...]
         Probe radii in nanometers.
     sample_count : int
@@ -710,7 +868,7 @@ def _compute_density_estimate(
     Returns
     -------
     DensityEstimate
-        Box-average and probe-free slit-volume density metrics.
+        Box-average, geometric-slit, and probe-free slit-volume density metrics.
 
     Warns
     -----
@@ -729,7 +887,12 @@ def _compute_density_estimate(
     guest_molecule_mass_da = _compute_target_residue_mass_da(
         guest_system, target_resname
     )
-    total_guest_mass_da = float(remaining_guest_molecules) * guest_molecule_mass_da
+    total_guest_mass_da = (
+        float(target_population.total_molecule_count) * guest_molecule_mass_da
+    )
+    interval_guest_mass_da = (
+        float(target_population.interval_molecule_count) * guest_molecule_mass_da
+    )
     box_volume_nm3 = float(np.prod(slit_geometry.box_lengths_nm))
     geometric_slit_volume_nm3 = slit_geometry.padded_geometric_volume_nm3(
         surface_plane_padding_nm
@@ -738,6 +901,11 @@ def _compute_density_estimate(
         total_guest_mass_da
         * GRAMS_PER_DA
         / (box_volume_nm3 * CUBIC_CENTIMETERS_PER_NM3)
+    )
+    geometric_slit_density_g_cm3 = (
+        interval_guest_mass_da
+        * GRAMS_PER_DA
+        / (geometric_slit_volume_nm3 * CUBIC_CENTIMETERS_PER_NM3)
     )
 
     probe_estimates: list[DensityProbeEstimate] = []
@@ -778,7 +946,7 @@ def _compute_density_estimate(
                 probe_free_densities_g_cm3.append(float("inf"))
             else:
                 probe_free_densities_g_cm3.append(
-                    total_guest_mass_da
+                    interval_guest_mass_da
                     * GRAMS_PER_DA
                     / (probe_free_volume_nm3 * CUBIC_CENTIMETERS_PER_NM3)
                 )
@@ -824,10 +992,13 @@ def _compute_density_estimate(
 
     return DensityEstimate(
         guest_molecule_mass_da=guest_molecule_mass_da,
+        target_population=target_population,
         total_guest_mass_da=total_guest_mass_da,
+        interval_guest_mass_da=interval_guest_mass_da,
         box_volume_nm3=box_volume_nm3,
         box_average_density_g_cm3=box_average_density_g_cm3,
         geometric_slit_volume_nm3=geometric_slit_volume_nm3,
+        geometric_slit_density_g_cm3=geometric_slit_density_g_cm3,
         surface_plane_padding_nm=surface_plane_padding_nm,
         sample_count_per_seed=sample_count,
         seed_count=seed_count,
@@ -898,35 +1069,6 @@ def _build_framework_system(
         residue_spans=tuple(framework_residue_spans),
         atom_to_residue_index=framework_atom_to_residue_index,
     )
-
-
-def _count_target_molecules(
-    merged_system: _GroSystem, target_resname: str
-) -> tuple[int, int]:
-    """Count target residues and atoms using the contiguous residue indexing.
-
-    Parameters
-    ----------
-    merged_system : _GroSystem
-        Merged atom records and residue spans.
-    target_resname : str
-        Exact residue name identifying the guest population.
-
-    Returns
-    -------
-    tuple[int, int]
-        Target residue and atom counts, respectively. Non-contiguous spans
-        count separately even when their residue identifiers repeat.
-    """
-
-    target_residue_count = 0
-    target_atom_count = 0
-    for residue_span in merged_system.residue_spans:
-        if residue_span.residue_name != target_resname:
-            continue
-        target_residue_count += 1
-        target_atom_count += residue_span.stop - residue_span.start
-    return target_residue_count, target_atom_count
 
 
 def _format_probe_block(probe_estimate: DensityProbeEstimate) -> str:
@@ -1011,10 +1153,31 @@ def _build_density_report_text(
         ],
     )
     counts = _format_value_lines(
-        "Counts",
+        "Target population",
         [
-            ("Guest molecules", str(report.guest_molecule_count)),
-            ("Guest atoms", str(report.guest_atom_count)),
+            ("Membership rule", "periodic center of mass inside padded interval"),
+            (
+                "Molecules in full box",
+                str(report.density_estimate.target_population.total_molecule_count),
+            ),
+            (
+                "Atoms in full-box molecules",
+                str(report.density_estimate.target_population.total_atom_count),
+            ),
+            (
+                "Molecules in padded interval",
+                str(report.density_estimate.target_population.interval_molecule_count),
+            ),
+            (
+                "Atoms in interval molecules",
+                str(report.density_estimate.target_population.interval_atom_count),
+            ),
+            (
+                "Molecules outside padded interval",
+                str(
+                    report.density_estimate.target_population.outside_interval_molecule_count
+                ),
+            ),
         ],
     )
     framework = _format_value_lines(
@@ -1039,8 +1202,12 @@ def _build_density_report_text(
                 f"{report.density_estimate.guest_molecule_mass_da:.5f} Da",
             ),
             (
-                "Total guest mass",
+                "Full-box target mass",
                 f"{report.density_estimate.total_guest_mass_da:.5f} Da",
+            ),
+            (
+                "Padded-interval target mass",
+                f"{report.density_estimate.interval_guest_mass_da:.5f} Da",
             ),
             ("Box volume", f"{report.density_estimate.box_volume_nm3:.5f} nm^3"),
             (
@@ -1050,6 +1217,10 @@ def _build_density_report_text(
             (
                 "Box-average density",
                 f"{report.density_estimate.box_average_density_g_cm3:.5f} g/cm^3",
+            ),
+            (
+                "Geometric slit density",
+                f"{report.density_estimate.geometric_slit_density_g_cm3:.5f} g/cm^3",
             ),
             (
                 "Samples per seed",
@@ -1124,16 +1295,19 @@ def estimate_guest_density(config: SlitDensityConfig) -> SlitDensityReport:
     # Density estimation wraps framework coordinates before the periodic
     # neighbor search, so nominal out-of-box coordinates are harmless here and
     # the fill-time warning only adds noise for already merged systems.
-    guest_molecule_count, guest_atom_count = _count_target_molecules(
-        merged_system=merged_system,
-        target_resname=config.target_resname,
-    )
     slit_geometry = _resolve_slit_geometry(
         slit_system=framework_system,
         slit_coordinates=framework_system.coordinates,
         explicit_geometry=config.slit_geometry,
         geometry_path=config.slit_geometry_path,
         padding_nm=config.surface_plane_padding_nm,
+    )
+    target_population = _select_target_population(
+        guest_system=merged_system,
+        guest_coordinates=merged_system.coordinates,
+        slit_geometry=slit_geometry,
+        surface_plane_padding_nm=config.surface_plane_padding_nm,
+        target_resname=config.target_resname,
     )
     density_estimate = _compute_density_estimate(
         guest_system=merged_system,
@@ -1142,15 +1316,13 @@ def estimate_guest_density(config: SlitDensityConfig) -> SlitDensityReport:
         slit_geometry=slit_geometry,
         surface_plane_padding_nm=config.surface_plane_padding_nm,
         target_resname=config.target_resname,
-        remaining_guest_molecules=guest_molecule_count,
+        target_population=target_population,
         probe_radii_nm=config.density_probe_radii_nm,
         sample_count=config.density_sample_count,
         seed_count=config.density_seed_count,
         random_seed=config.random_seed,
     )
     report = SlitDensityReport(
-        guest_molecule_count=guest_molecule_count,
-        guest_atom_count=guest_atom_count,
         framework_atom_count=framework_system.atom_count,
         framework_residue_count=len(framework_system.residue_spans),
         framework_resnames=framework_resnames,
@@ -1177,8 +1349,8 @@ def _build_density_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Estimate target guest density inside an already merged slit structure "
-            "by counting target molecules and computing framework-excluded, "
-            "probe-free volume inside the mean-plane slit interval."
+            "by assigning target molecular centers to the mean-plane interval "
+            "and computing its framework-excluded probe-free volume."
         )
     )
     parser.add_argument(

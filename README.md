@@ -174,7 +174,8 @@ that is physically inapplicable.
 Standalone density analysis classifies components with exact residue-name
 selectors. `framework_resnames` lists atoms that exclude probe volume;
 `mobile_resnames` lists non-target mobile components, and `target_resname` is
-automatically mobile and selects only the density numerator. The default
+automatically mobile and selects the chemical species whose population is
+analyzed. The default
 framework selector is `("OM", "SI", "SL", "SLG")`, the native bare-silica
 vocabulary. Functional groups such as `TPS`/`TPSG` and co-guests such as water
 or ions must be classified explicitly. Supplying any `--framework-resname`
@@ -199,12 +200,20 @@ whose surface Si atoms can no longer be inferred should use the geometry file
 written by construction or filling.
 
 Density Monte Carlo points are sampled uniformly only inside the signed-padded
-mean-plane interval. Framework van der Waals radii plus each requested probe
-radius then define the reported **probe-free volume**. This is a geometric
-exclusion estimate; it does not establish solvent connectivity, reachability,
-or experimentally accessible pore volume. Reports retain every seed-level
-fraction, volume, and density. Plotting workflows must also export their plot
-data as CSV.
+mean-plane interval. Target residues are assigned to that same interval by
+their mass-weighted centers after periodic whole-residue reconstruction. The
+full-box target mass is used only for the box-average density; geometric and
+probe-free slit densities use only the interval-assigned target mass. Reports
+state this membership rule and retain full-box, inside, and outside population
+counts. Filling's optional all-atoms-inside surface-plane filter remains a
+stricter construction rule, while filling and standalone density calculations
+share the center-of-mass analysis rule.
+
+Framework van der Waals radii plus each requested probe radius define the
+reported **probe-free volume**. This is a geometric exclusion estimate; it does
+not establish solvent connectivity, reachability, or experimentally accessible
+pore volume. Reports retain every seed-level fraction, volume, and density.
+Plotting workflows must also export their plot data as CSV.
 
 ## Output and extension APIs
 

@@ -196,6 +196,7 @@ def test_fill_slit_keeps_positions_and_velocities_in_the_same_output_frame(
     boundary_position = box / 2.0
     tangential_axis = (normal_axis + 1) % 3
     boundary_position[tangential_axis] = box[tangential_axis]
+    boundary_position[normal_axis] = 0.1
     # A retained dimer, a clashing residue, a retained boundary residue, and
     # a residue outside the crop. Distinct velocities detect indexing errors.
     guest_coordinates = (
@@ -291,6 +292,11 @@ def test_fill_slit_keeps_positions_and_velocities_in_the_same_output_frame(
     assert report.removed_outside_crop_guest_molecules == 1
     assert report.removed_by_general_cutoff_guest_molecules == 1
     assert report.remaining_guest_molecules == 2
+    assert report.density_estimate.target_population.total_molecule_count == 2
+    assert report.density_estimate.target_population.interval_molecule_count == 1
+    assert (
+        report.density_estimate.target_population.outside_interval_molecule_count == 1
+    )
     assert report.final_atom_count == 5
     assert report.final_residue_count == 4
     assert report.output_axis_permutation == permutation
@@ -643,9 +649,20 @@ def test_density_analysis_is_reproducible_and_cli_helpers_accept_argv(
     probe_b = report_b.density_estimate.probe_estimates[0]
     probe_cli = cli_report.density_estimate.probe_estimates[0]
 
-    assert report_a.guest_molecule_count == 1
-    assert report_a.guest_atom_count == 6
+    assert report_a.density_estimate.target_population.total_molecule_count == 1
+    assert report_a.density_estimate.target_population.total_atom_count == 6
+    assert report_a.density_estimate.target_population.interval_molecule_count == 1
     assert report_a.framework_atom_count == 6
+    assert (
+        fill_report.density_estimate.target_population
+        == report_a.density_estimate.target_population
+    )
+    assert fill_report.density_estimate.interval_guest_mass_da == pytest.approx(
+        report_a.density_estimate.interval_guest_mass_da
+    )
+    assert fill_report.density_estimate.geometric_slit_density_g_cm3 == pytest.approx(
+        report_a.density_estimate.geometric_slit_density_g_cm3
+    )
     assert probe_a.seed_values == probe_b.seed_values == probe_cli.seed_values
     assert (
         probe_a.probe_free_volumes_nm3

@@ -194,7 +194,7 @@ For each configured probe radius, density analysis samples points uniformly
 inside the padded geometric slit interval, not throughout the full simulation
 box. Standalone analysis assigns exact residue names to `framework_resnames`
 or `mobile_resnames`; `target_resname` is always mobile and selects only the
-density numerator. The default framework selector contains the native silica
+density species. The default framework selector contains the native silica
 residues `OM`, `SI`, `SL`, and `SLG`. User-named surface functional groups and
 all non-target guests require explicit classification. Selectors must be
 disjoint and exhaustive for the residue names present, so ambiguous inputs
@@ -205,12 +205,26 @@ van der Waals radius enlarged by the probe radius under orthorhombic periodic
 boundary conditions. Mobile species, including non-target mixture components,
 do not exclude framework-accessible volume. Consequently all target species in
 one mixture can use the same framework denominator. The probe-free fraction is
-normalized by the padded geometric slit volume, and target mass divided by the
-corresponding probe-free volume gives the reported probe-free density. Repeated
-seeded estimates retain all seed-level values. This local geometric exclusion
-does not test whether free regions are connected to one another or reachable
-from a reservoir, so it must not be interpreted as a connectivity-based or
-experimental accessible pore volume.
+normalized by the padded geometric slit volume.
+
+The target population is defined independently of framework membership. Each
+target residue is reconstructed around its first atom with orthorhombic
+minimum-image displacements, and its mass-weighted center determines whether
+the whole molecule belongs to the signed-padded mean-plane interval. Full-box,
+inside-interval, and outside-interval counts are reported. Full-box target mass
+divided by full-box volume gives the box-average density. Interval-assigned
+target mass divided by padded geometric volume gives the geometric slit
+density, and the same interval mass divided by probe-free volume gives the
+probe-free slit density. Thus changing padding updates both the population and
+the corresponding control volume. Filling retains its stricter optional rule
+that every atom must lie inside the interval as a construction filter, but its
+density calculation applies the same center-of-mass population definition as
+standalone analysis to the finalized output coordinates.
+
+Repeated seeded estimates retain all seed-level values. This local geometric
+exclusion does not test whether free regions are connected to one another or
+reachable from a reservoir, so it must not be interpreted as a
+connectivity-based or experimental accessible pore volume.
 
 ## Lineage
 

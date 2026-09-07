@@ -91,12 +91,21 @@ unchanged and a new partial set is not exposed.
 The signed ``surface_plane_padding_nm`` contracts the mean-plane interval when
 positive and expands it when negative. The resulting width must stay positive
 and no larger than the normal box length. Density sampling is uniform inside
-this padded geometric interval. Framework van der Waals radii enlarged by the
-probe radius determine the **probe-free fraction and volume**. Other mobile
-mixture components do not exclude this framework-accessible volume, so target
-species analyzed with the same probe radius share one denominator. These
-values do not test connectivity or reachability and therefore are not
-experimental or connectivity-based accessible pore volumes.
+this padded geometric interval. A target molecule belongs to the density
+numerator when its mass-weighted center, calculated after periodic
+whole-residue reconstruction, lies inside the same interval. Full-box target
+mass is used only for box-average density. Geometric and probe-free slit
+densities use the interval-assigned mass, and reports include full-box, inside,
+and outside molecule counts. Filling's optional all-atoms-inside plane filter
+remains a stricter construction rule; its density report still uses the shared
+center-of-mass analysis rule on the finalized coordinates.
+
+Framework van der Waals radii enlarged by the probe radius determine the
+**probe-free fraction and volume**. Other mobile mixture components do not
+exclude this framework-accessible volume, so target species analyzed with the
+same probe radius share one denominator. These values do not test connectivity
+or reachability and therefore are not experimental or connectivity-based
+accessible pore volumes.
 
 Density estimates retain the raw probe-radius, seed, fraction, volume, and
 density values. Any downstream plotting workflow must export companion plot

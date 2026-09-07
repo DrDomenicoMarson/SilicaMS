@@ -95,6 +95,7 @@ def test_density_public_exports_and_dataclass_serialization(density_case) -> Non
         "DEFAULT_DENSITY_PROBE_RADII_NM",
         "DEFAULT_FRAMEWORK_RESNAMES",
         "DensityProbeEstimate",
+        "TargetPopulationSummary",
         "DensityEstimate",
         "SlitDensityConfig",
         "SlitDensityReport",
@@ -109,6 +110,7 @@ def test_density_public_exports_and_dataclass_serialization(density_case) -> Non
     for value in (
         config,
         report,
+        report.density_estimate.target_population,
         report.density_estimate,
         report.density_estimate.probe_estimates[0],
     ):
@@ -169,9 +171,7 @@ def test_density_defaults_and_numpy_integer_normalization() -> None:
         ("mobile_resnames", (1,), TypeError),
     ),
 )
-def test_density_component_selectors_are_exact_and_unique(
-    field, value, error
-) -> None:
+def test_density_component_selectors_are_exact_and_unique(field, value, error) -> None:
     """Reject malformed residue selectors before reading an input file."""
 
     with pytest.raises(error):
@@ -200,9 +200,7 @@ def test_density_requires_exhaustive_disjoint_component_selectors(
     assert report.mobile_resnames == ("ADS", "ION", "SOL")
 
     with pytest.raises(ValueError, match=r"ION \(1 residues\)"):
-        density_mod.estimate_guest_density(
-            replace(config, mobile_resnames=("ADS",))
-        )
+        density_mod.estimate_guest_density(replace(config, mobile_resnames=("ADS",)))
     with pytest.raises(ValueError, match="both framework and mobile: SOL"):
         density_mod.estimate_guest_density(
             replace(config, framework_resnames=("SIL", "SOL"))
@@ -230,11 +228,7 @@ def test_framework_and_target_selection_preserve_order_and_independence(
     source = density_case.merged
     if not with_velocities:
         source = replace(source, velocities=None)
-    framework = density_mod._build_framework_system(
-        source, ("SIL", "ADS", "ION")
-    )
-    assert density_mod._count_target_molecules(source, "SOL") == (2, 4)
-    assert density_mod._count_target_molecules(source, "MISSING") == (0, 0)
+    framework = density_mod._build_framework_system(source, ("SIL", "ADS", "ION"))
     assert framework.residue_names == ["SIL", "ADS", "ION"]
     assert framework.atom_names == ["SI1", "O1", "CL"]
     np.testing.assert_array_equal(framework.atom_ids, [1, 2, 5])
@@ -256,6 +250,151 @@ def test_framework_and_target_selection_preserve_order_and_independence(
         assert framework.velocities is None
     assert framework.atom_names is not source.atom_names
     assert framework.residue_names is not source.residue_names
+
+
+def test_target_population_reconstructs_periodic_center_of_mass(density_case) -> None:
+    """Assign a boundary-straddling molecule from its reconstructed center."""
+
+    coordinates = density_case.merged.coordinates.copy()
+    coordinates[2, 0] = 1.99
+    coordinates[3, 0] = 0.01
+    geometry = PeriodicSlitGeometry((2.0, 3.0, 4.0), 0, 1.9, 0.2)
+
+    population = density_mod._select_target_population(
+        guest_system=density_case.merged,
+        guest_coordinates=coordinates,
+        slit_geometry=geometry,
+        surface_plane_padding_nm=0.0,
+        target_resname="SOL",
+    )
+
+    assert population == density_mod.TargetPopulationSummary(
+        total_molecule_count=2,
+        total_atom_count=4,
+        interval_molecule_count=1,
+        interval_atom_count=2,
+    )
+    assert population.outside_interval_molecule_count == 1
+    assert population.outside_interval_atom_count == 2
+
+
+def test_positive_padding_reselects_target_population(density_case) -> None:
+    """Use the same signed padding for molecule assignment and slit volume."""
+
+    coordinates = density_case.merged.coordinates.copy()
+    coordinates[2:4, 0] = 0.24
+    unpadded = density_mod._select_target_population(
+        density_case.merged,
+        coordinates,
+        density_case.geometry,
+        0.0,
+        "SOL",
+    )
+    padded = density_mod._select_target_population(
+        density_case.merged,
+        coordinates,
+        density_case.geometry,
+        0.05,
+        "SOL",
+    )
+
+    assert unpadded.interval_molecule_count == 2
+    assert padded.interval_molecule_count == 1
+    assert padded.total_molecule_count == unpadded.total_molecule_count == 2
+
+
+def test_target_population_rejects_invalid_coordinates_and_masks(density_case) -> None:
+    """Reject malformed population inputs before residue classification."""
+
+    arguments = (
+        density_case.merged,
+        density_case.merged.coordinates,
+        density_case.geometry,
+        0.0,
+        "SOL",
+    )
+    with pytest.raises(ValueError, match=r"shape \(N, 3\)"):
+        density_mod._select_target_population(
+            density_case.merged,
+            density_case.merged.coordinates[:, 0],
+            density_case.geometry,
+            0.0,
+            "SOL",
+        )
+
+    nonfinite_coordinates = density_case.merged.coordinates.copy()
+    nonfinite_coordinates[0, 0] = np.nan
+    with pytest.raises(ValueError, match="coordinates must be finite"):
+        density_mod._select_target_population(
+            density_case.merged,
+            nonfinite_coordinates,
+            density_case.geometry,
+            0.0,
+            "SOL",
+        )
+
+    invalid_mask = np.ones(len(density_case.merged.residue_spans), dtype=np.int8)
+    with pytest.raises(ValueError, match="mask must be boolean"):
+        density_mod._select_target_population(
+            *arguments,
+            selected_residue_mask=invalid_mask,
+        )
+
+
+def test_outside_target_changes_box_average_but_not_slit_density(
+    tmp_path,
+    write_gro,
+) -> None:
+    """Keep an external target out of both geometric and probe-free numerators."""
+
+    inside_path = tmp_path / "inside_only.gro"
+    outside_path = tmp_path / "with_outside.gro"
+    atoms = [
+        (1, "SIL", "SI1", 1, 0.1, 1.0, 1.0),
+        (2, "SOL", "C1", 2, 0.6, 1.0, 1.0),
+    ]
+    write_gro(inside_path, atoms, (2.0, 2.0, 2.0))
+    write_gro(
+        outside_path,
+        [*atoms, (3, "SOL", "C1", 3, 1.9, 1.0, 1.0)],
+        (2.0, 2.0, 2.0),
+    )
+    geometry = PeriodicSlitGeometry((2.0, 2.0, 2.0), 0, 0.2, 1.8)
+
+    def analyze(path):
+        return density_mod.estimate_guest_density(
+            density_mod.SlitDensityConfig(
+                input_path=path,
+                slit_geometry=geometry,
+                target_resname="SOL",
+                framework_resnames=("SIL",),
+                density_probe_radii_nm=(0.0,),
+                density_sample_count=500,
+                density_seed_count=1,
+                random_seed=19,
+            )
+        )
+
+    inside = analyze(inside_path)
+    with_outside = analyze(outside_path)
+    inside_estimate = inside.density_estimate
+    outside_estimate = with_outside.density_estimate
+
+    assert inside_estimate.target_population.interval_molecule_count == 1
+    assert outside_estimate.target_population.total_molecule_count == 2
+    assert outside_estimate.target_population.interval_molecule_count == 1
+    assert outside_estimate.box_average_density_g_cm3 == pytest.approx(
+        2.0 * inside_estimate.box_average_density_g_cm3
+    )
+    assert outside_estimate.geometric_slit_density_g_cm3 == pytest.approx(
+        inside_estimate.geometric_slit_density_g_cm3
+    )
+    assert outside_estimate.probe_estimates[0].probe_free_volume_mean_nm3 == (
+        inside_estimate.probe_estimates[0].probe_free_volume_mean_nm3
+    )
+    assert outside_estimate.probe_estimates[0].probe_free_density_mean_g_cm3 == (
+        inside_estimate.probe_estimates[0].probe_free_density_mean_g_cm3
+    )
 
 
 def test_representative_mass_and_lookup_failures(density_case) -> None:
@@ -359,7 +498,12 @@ def test_density_aggregation_preserves_probe_seed_and_arithmetic_order(
         density_case.geometry,
         0.05,
         "SOL",
-        guest_count,
+        density_mod.TargetPopulationSummary(
+            total_molecule_count=guest_count,
+            total_atom_count=guest_count * 2,
+            interval_molecule_count=guest_count,
+            interval_atom_count=guest_count * 2,
+        ),
         (0.2, 0.0, 0.2),
         100,
         2,
@@ -380,9 +524,11 @@ def test_density_aggregation_preserves_probe_seed_and_arithmetic_order(
     mass = guest_count * (12.0107 + 1.0079)
     factor = mass * 1.66053906660e-24 / 1.0e-21
     assert result.total_guest_mass_da == mass
+    assert result.interval_guest_mass_da == mass
     assert result.box_volume_nm3 == 24.0
     assert result.box_average_density_g_cm3 == pytest.approx(factor / 24.0)
     assert result.geometric_slit_volume_nm3 == volume
+    assert result.geometric_slit_density_g_cm3 == pytest.approx(factor / volume)
     for probe, pair in zip(result.probe_estimates, seeds):
         assert probe.seed_values == pair
         assert probe.probe_free_volumes_nm3 == (2.0, 4.0)
@@ -508,7 +654,12 @@ def test_zero_free_volume_retains_warnings_and_infinite_density(
             density_case.geometry,
             0.0,
             "SOL",
-            guest_count,
+            density_mod.TargetPopulationSummary(
+                total_molecule_count=guest_count,
+                total_atom_count=guest_count * 2,
+                interval_molecule_count=guest_count,
+                interval_atom_count=guest_count * 2,
+            ),
             (10.0,),
             100,
             seed_count,
@@ -577,7 +728,9 @@ def test_standalone_density_api_cli_defaults_and_report(
     assert log_path.read_text() == report_text
     assert report_text.index("Probe details") < report_text.index("Density summary")
     assert "g/cm^3" in report_text and "nm^3" in report_text
-    assert report.guest_molecule_count == 2 and report.guest_atom_count == 4
+    assert report.density_estimate.target_population.total_molecule_count == 2
+    assert report.density_estimate.target_population.total_atom_count == 4
+    assert report.density_estimate.target_population.interval_molecule_count == 2
     assert report.framework_atom_count == report.framework_residue_count == 3
     assert report.framework_resnames == ("ADS", "ION", "SIL")
     assert report.mobile_resnames == ("SOL",)

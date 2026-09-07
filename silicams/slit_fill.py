@@ -4,7 +4,6 @@
 """Guest filling and clash filtering for amorphous silica slits."""
 ################################################################################
 
-
 from __future__ import annotations
 
 import argparse
@@ -23,7 +22,10 @@ from silicams._gro_io import (
     _write_merged_gro,
 )
 from silicams._output_transaction import staged_output_paths
-from silicams._slit_geometry_io import _resolve_slit_geometry, _write_slit_geometry_metadata
+from silicams._slit_geometry_io import (
+    _resolve_slit_geometry,
+    _write_slit_geometry_metadata,
+)
 from silicams._slit_guest_filter import (
     _ClashSelection,
     _apply_surface_plane_filter,
@@ -38,6 +40,7 @@ from silicams.slit_density import (
     DensityEstimate,
     _compute_density_estimate,
     _format_probe_block,
+    _select_target_population,
 )
 from silicams.slit_geometry import (
     AXIS_NAMES,
@@ -178,7 +181,9 @@ class SlitFillConfig:
         )
         if any(radius < 0.0 for radius in probe_radii):
             raise ValueError("All density probe radii must be non-negative.")
-        density_sample_count = integral("density_sample_count", self.density_sample_count)
+        density_sample_count = integral(
+            "density_sample_count", self.density_sample_count
+        )
         density_seed_count = integral("density_seed_count", self.density_seed_count)
         if density_sample_count <= 0:
             raise ValueError("The density sample count must be strictly positive.")
@@ -189,7 +194,10 @@ class SlitFillConfig:
             random_seed = integral("random_seed", self.random_seed)
             if random_seed < 0:
                 raise ValueError("The random seed must be non-negative.")
-        boolean("include_hydrogen_bonds_in_ring_check", self.include_hydrogen_bonds_in_ring_check)
+        boolean(
+            "include_hydrogen_bonds_in_ring_check",
+            self.include_hydrogen_bonds_in_ring_check,
+        )
         boolean("use_surface_plane_filter", self.use_surface_plane_filter)
         boolean("wrap_output", self.wrap_output)
         object.__setattr__(self, "general_cutoff_nm", general_cutoff_nm)
@@ -325,7 +333,8 @@ class SlitFillReport:
     slit_bond_count_checked : int
         Number of slit bond segments checked against guest aromatic rings.
     density_estimate : DensityEstimate
-        Density metrics derived for the retained guest population.
+        Full-box and padded-interval density metrics for retained target
+        residues in the finalized output coordinates.
     framework_resnames : tuple[str, ...]
         Residue names originating in the slit input and therefore classified
         as framework for density analysis.
@@ -532,13 +541,17 @@ def _wrap_residues(
 
     wrapped_coordinates = coordinates.copy()
     for residue_span in system.residue_spans:
-        if not np.all(keep_atom_mask[residue_span.start:residue_span.stop]):
+        if not np.all(keep_atom_mask[residue_span.start : residue_span.stop]):
             continue
 
-        residue_coordinates = wrapped_coordinates[residue_span.start:residue_span.stop]
+        residue_coordinates = wrapped_coordinates[
+            residue_span.start : residue_span.stop
+        ]
         center_of_geometry = np.mean(residue_coordinates, axis=0)
         image_shift = box_lengths * np.floor(center_of_geometry / box_lengths)
-        wrapped_coordinates[residue_span.start:residue_span.stop] = residue_coordinates - image_shift
+        wrapped_coordinates[residue_span.start : residue_span.stop] = (
+            residue_coordinates - image_shift
+        )
 
     return wrapped_coordinates
 
@@ -743,7 +756,9 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
             ),
             (
                 "General + forward + reverse",
-                str(report.removed_by_general_and_forward_and_reverse_ring_guest_molecules),
+                str(
+                    report.removed_by_general_and_forward_and_reverse_ring_guest_molecules
+                ),
             ),
         ],
     )
@@ -763,8 +778,14 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
             ("Guest bonds checked", str(report.guest_bond_count_checked)),
             ("Slit bond templates", str(report.slit_bond_template_count)),
             ("Slit bonds checked", str(report.slit_bond_count_checked)),
-            ("Removed by forward ring", str(report.removed_by_forward_ring_guest_molecules)),
-            ("Removed by reverse ring", str(report.removed_by_reverse_ring_guest_molecules)),
+            (
+                "Removed by forward ring",
+                str(report.removed_by_forward_ring_guest_molecules),
+            ),
+            (
+                "Removed by reverse ring",
+                str(report.removed_by_reverse_ring_guest_molecules),
+            ),
             ("Removed by any ring", str(report.removed_by_any_ring_guest_molecules)),
             (
                 "Forward ring only",
@@ -783,11 +804,33 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
     density = _format_value_lines(
         "Density",
         [
+            ("Membership rule", "periodic center of mass inside padded interval"),
+            (
+                "Target molecules in full box",
+                str(report.density_estimate.target_population.total_molecule_count),
+            ),
+            (
+                "Target molecules in padded interval",
+                str(report.density_estimate.target_population.interval_molecule_count),
+            ),
+            (
+                "Target molecules outside padded interval",
+                str(
+                    report.density_estimate.target_population.outside_interval_molecule_count
+                ),
+            ),
             (
                 "Guest molecule mass",
                 f"{report.density_estimate.guest_molecule_mass_da:.5f} Da",
             ),
-            ("Total guest mass", f"{report.density_estimate.total_guest_mass_da:.5f} Da"),
+            (
+                "Full-box target mass",
+                f"{report.density_estimate.total_guest_mass_da:.5f} Da",
+            ),
+            (
+                "Padded-interval target mass",
+                f"{report.density_estimate.interval_guest_mass_da:.5f} Da",
+            ),
             ("Box volume", f"{report.density_estimate.box_volume_nm3:.5f} nm^3"),
             (
                 "Padded geometric slit volume",
@@ -796,6 +839,10 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
             (
                 "Box-average density",
                 f"{report.density_estimate.box_average_density_g_cm3:.5f} g/cm^3",
+            ),
+            (
+                "Geometric slit density",
+                f"{report.density_estimate.geometric_slit_density_g_cm3:.5f} g/cm^3",
             ),
             (
                 "Samples per seed",
@@ -815,11 +862,26 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
                 ("Initial", str(summary.initial_residues)),
                 ("Cropped", str(summary.cropped_residues)),
                 ("Removed outside crop", str(summary.removed_outside_crop_residues)),
-                ("After surface-plane filter", str(summary.surface_plane_filtered_residues)),
-                ("Removed by surface plane", str(summary.removed_by_surface_plane_residues)),
-                ("Removed by general cutoff", str(summary.removed_by_general_cutoff_residues)),
-                ("Removed by forward ring", str(summary.removed_by_forward_ring_residues)),
-                ("Removed by reverse ring", str(summary.removed_by_reverse_ring_residues)),
+                (
+                    "After surface-plane filter",
+                    str(summary.surface_plane_filtered_residues),
+                ),
+                (
+                    "Removed by surface plane",
+                    str(summary.removed_by_surface_plane_residues),
+                ),
+                (
+                    "Removed by general cutoff",
+                    str(summary.removed_by_general_cutoff_residues),
+                ),
+                (
+                    "Removed by forward ring",
+                    str(summary.removed_by_forward_ring_residues),
+                ),
+                (
+                    "Removed by reverse ring",
+                    str(summary.removed_by_reverse_ring_residues),
+                ),
                 ("Removed by any clash", str(summary.removed_by_any_clash_residues)),
                 ("Removed total", str(summary.removed_total_residues)),
                 ("Remaining", str(summary.remaining_residues)),
@@ -835,11 +897,15 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
             ("Final residue count", str(report.final_residue_count)),
             (
                 "Axis order",
-                " ".join(AXIS_NAMES[axis_index] for axis_index in report.output_axis_permutation),
+                " ".join(
+                    AXIS_NAMES[axis_index]
+                    for axis_index in report.output_axis_permutation
+                ),
             ),
             (
                 "Crop window start",
-                " ".join(f"{value:.5f}" for value in report.crop_window_start_nm) + " nm",
+                " ".join(f"{value:.5f}" for value in report.crop_window_start_nm)
+                + " nm",
             ),
             (
                 "Output box",
@@ -903,9 +969,11 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
 
     final_box_lengths = slit_system.box_lengths.copy()
     centered_slit_coordinates = slit_system.coordinates.copy()
-    translated_guest_coordinates, cropped_residue_mask, crop_window_start = _center_crop_guest_residues(
-        guest_system=guest_system,
-        final_box_lengths=final_box_lengths,
+    translated_guest_coordinates, cropped_residue_mask, crop_window_start = (
+        _center_crop_guest_residues(
+            guest_system=guest_system,
+            final_box_lengths=final_box_lengths,
+        )
     )
 
     input_slit_geometry = _resolve_slit_geometry(
@@ -990,13 +1058,14 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
 
     final_atom_count = slit_system.atom_count + int(np.count_nonzero(kept_guest_mask))
     final_residue_count = len(slit_system.residue_spans) + int(
-        np.count_nonzero(
-            selected_residue_mask & ~clash_selection.removed_residue_mask
-        )
+        np.count_nonzero(selected_residue_mask & ~clash_selection.removed_residue_mask)
     )
 
     target_residue_mask = np.array(
-        [residue_span.residue_name == config.target_resname for residue_span in guest_system.residue_spans],
+        [
+            residue_span.residue_name == config.target_resname
+            for residue_span in guest_system.residue_spans
+        ],
         dtype=bool,
     )
     general_mask = clash_selection.removed_by_general_mask & target_residue_mask
@@ -1010,17 +1079,27 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
 
     initial_guest_molecules = int(np.count_nonzero(target_residue_mask))
     cropped_guest_molecules = int(np.count_nonzero(cropped_mask))
-    removed_outside_crop_guest_molecules = initial_guest_molecules - cropped_guest_molecules
-    surface_plane_filtered_guest_molecules = int(np.count_nonzero(surface_plane_filtered_mask))
+    removed_outside_crop_guest_molecules = (
+        initial_guest_molecules - cropped_guest_molecules
+    )
+    surface_plane_filtered_guest_molecules = int(
+        np.count_nonzero(surface_plane_filtered_mask)
+    )
     removed_by_surface_plane_guest_molecules = int(np.count_nonzero(surface_plane_mask))
     removed_by_general_cutoff_guest_molecules = int(np.count_nonzero(general_mask))
     removed_by_forward_ring_guest_molecules = int(np.count_nonzero(forward_mask))
     removed_by_reverse_ring_guest_molecules = int(np.count_nonzero(reverse_mask))
     removed_by_any_ring_guest_molecules = int(np.count_nonzero(any_ring_mask))
 
-    removed_by_general_only_guest_molecules = int(np.count_nonzero(general_mask & ~forward_mask & ~reverse_mask))
-    removed_by_forward_ring_only_guest_molecules = int(np.count_nonzero(~general_mask & forward_mask & ~reverse_mask))
-    removed_by_reverse_ring_only_guest_molecules = int(np.count_nonzero(~general_mask & ~forward_mask & reverse_mask))
+    removed_by_general_only_guest_molecules = int(
+        np.count_nonzero(general_mask & ~forward_mask & ~reverse_mask)
+    )
+    removed_by_forward_ring_only_guest_molecules = int(
+        np.count_nonzero(~general_mask & forward_mask & ~reverse_mask)
+    )
+    removed_by_reverse_ring_only_guest_molecules = int(
+        np.count_nonzero(~general_mask & ~forward_mask & reverse_mask)
+    )
     removed_by_general_and_forward_ring_only_guest_molecules = int(
         np.count_nonzero(general_mask & forward_mask & ~reverse_mask)
     )
@@ -1042,6 +1121,22 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     )
     remaining_guest_molecules = initial_guest_molecules - removed_guest_molecules
 
+    final_selected_residue_mask = (
+        selected_residue_mask & ~clash_selection.removed_residue_mask
+    )
+    target_population = _select_target_population(
+        guest_system=guest_system,
+        guest_coordinates=output_guest_coordinates,
+        slit_geometry=output_slit_geometry,
+        surface_plane_padding_nm=config.surface_plane_padding_nm,
+        target_resname=config.target_resname,
+        selected_residue_mask=final_selected_residue_mask,
+    )
+    if target_population.total_molecule_count != remaining_guest_molecules:
+        raise RuntimeError(
+            "Final target population diverged from the filling filter counts."
+        )
+
     density_estimate = _compute_density_estimate(
         guest_system=guest_system,
         framework_system=slit_system,
@@ -1049,7 +1144,7 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         slit_geometry=output_slit_geometry,
         surface_plane_padding_nm=config.surface_plane_padding_nm,
         target_resname=config.target_resname,
-        remaining_guest_molecules=remaining_guest_molecules,
+        target_population=target_population,
         probe_radii_nm=config.density_probe_radii_nm,
         sample_count=config.density_sample_count,
         seed_count=config.density_seed_count,

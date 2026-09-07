@@ -31,6 +31,7 @@ from .slit_density import (
     DensityProbeEstimate,
     SlitDensityConfig,
     SlitDensityReport,
+    TargetPopulationSummary,
     estimate_guest_density,
 )
 from .slit_fill import (
@@ -107,6 +108,7 @@ __all__ = [
     "pairwise_minimum_image_distances",
     "wrap_positions",
     "DensityProbeEstimate",
+    "TargetPopulationSummary",
     "GuestResidueFilterSummary",
     "DensityEstimate",
     "SlitFillReport",
