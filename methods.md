@@ -164,7 +164,11 @@ width must remain positive and cannot exceed the periodic box length along the
 slit normal.
 
 The merged GRO, geometry YAML, and report log are staged and promoted as one
-exception-safe output set.
+exception-safe output set. Filling also writes source-derived component
+provenance: residue names from the slit input are recorded as framework and
+residue names from the guest reservoir as mobile. This metadata is descriptive
+and is not an implicit standalone-analysis selector. A residue name present in
+both inputs is rejected because it would become ambiguous after merging.
 
 Output axes are permuted to place the slit normal on z. The same permutation
 is applied to slit and guest coordinates, their optional Cartesian velocities
@@ -188,15 +192,25 @@ surface signature needed for inference.
 
 For each configured probe radius, density analysis samples points uniformly
 inside the padded geometric slit interval, not throughout the full simulation
-box. A point is probe-free when it lies outside every framework van der Waals
-radius enlarged by that probe radius under orthorhombic periodic boundary
-conditions. The probe-free fraction is normalized by the padded geometric
-slit volume, and the guest mass divided by the corresponding probe-free volume
-gives the reported probe-free density. Repeated seeded estimates retain all
-seed-level values. This local geometric exclusion does not test whether free
-regions are connected to one another or reachable from a reservoir, so it
-must not be interpreted as a connectivity-based or experimental accessible
-pore volume.
+box. Standalone analysis assigns exact residue names to `framework_resnames`
+or `mobile_resnames`; `target_resname` is always mobile and selects only the
+density numerator. The default framework selector contains the native silica
+residues `OM`, `SI`, `SL`, and `SLG`. User-named surface functional groups and
+all non-target guests require explicit classification. Selectors must be
+disjoint and exhaustive for the residue names present, so ambiguous inputs
+fail instead of being assigned by complement.
+
+A point is probe-free when it lies outside every explicitly selected framework
+van der Waals radius enlarged by the probe radius under orthorhombic periodic
+boundary conditions. Mobile species, including non-target mixture components,
+do not exclude framework-accessible volume. Consequently all target species in
+one mixture can use the same framework denominator. The probe-free fraction is
+normalized by the padded geometric slit volume, and target mass divided by the
+corresponding probe-free volume gives the reported probe-free density. Repeated
+seeded estimates retain all seed-level values. This local geometric exclusion
+does not test whether free regions are connected to one another or reachable
+from a reservoir, so it must not be interpreted as a connectivity-based or
+experimental accessible pore volume.
 
 ## Lineage
 

@@ -326,6 +326,12 @@ class SlitFillReport:
         Number of slit bond segments checked against guest aromatic rings.
     density_estimate : DensityEstimate
         Density metrics derived for the retained guest population.
+    framework_resnames : tuple[str, ...]
+        Residue names originating in the slit input and therefore classified
+        as framework for density analysis.
+    mobile_resnames : tuple[str, ...]
+        Residue names originating in the guest input and therefore classified
+        as mobile for density analysis.
     slit_atom_count : int
         Number of atoms copied from the slit structure.
     final_atom_count : int
@@ -370,6 +376,8 @@ class SlitFillReport:
     slit_bond_template_count: int
     slit_bond_count_checked: int
     density_estimate: DensityEstimate
+    framework_resnames: tuple[str, ...]
+    mobile_resnames: tuple[str, ...]
     slit_atom_count: int
     final_atom_count: int
     final_residue_count: int
@@ -465,8 +473,9 @@ def _validate_fill_config(
     Raises
     ------
     ValueError
-        Raised when the target residue is missing or when the slit box cannot
-        be cropped from the guest box.
+        Raised when the target residue is missing, a residue name occurs in
+        both source systems, or the slit box cannot be cropped from the guest
+        box.
     """
 
     if config.target_resname not in guest_system.residue_names:
@@ -474,6 +483,18 @@ def _validate_fill_config(
         raise ValueError(
             f"Residue name {config.target_resname!r} was not found in {config.guest_path}. "
             f"Available residue names: {', '.join(available_residues)}"
+        )
+
+    slit_resnames = set(slit_system.residue_names)
+    guest_resnames = set(guest_system.residue_names)
+    overlapping_resnames = sorted(slit_resnames & guest_resnames)
+    if overlapping_resnames:
+        raise ValueError(
+            "Residue names occur in both the slit and guest inputs and would be "
+            "ambiguous after merging: "
+            + ", ".join(overlapping_resnames)
+            + ". Rename the residues so framework and mobile selectors remain "
+            "disjoint."
         )
 
     if np.any(slit_system.box_lengths > guest_system.box_lengths):
@@ -645,7 +666,20 @@ def _build_guest_filter_summaries(
 
 
 def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> str:
-    """Build the human-readable text report for the slit-fill workflow."""
+    """Build the human-readable text report for the slit-fill workflow.
+
+    Parameters
+    ----------
+    config : SlitFillConfig
+        Resolved fill inputs, outputs, and scientific settings.
+    report : SlitFillReport
+        Completed filtering, component, geometry, and density results.
+
+    Returns
+    -------
+    str
+        Newline-terminated report with explicit component roles and units.
+    """
 
     inputs = _format_value_lines(
         "Inputs",
@@ -660,6 +694,8 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
         "Selection",
         [
             ("Density/report residue", config.target_resname),
+            ("Framework residue names", ", ".join(report.framework_resnames)),
+            ("Mobile residue names", ", ".join(report.mobile_resnames)),
             ("General cutoff", f"{config.general_cutoff_nm:.3f} nm"),
             ("Surface-plane filter", str(config.use_surface_plane_filter)),
             ("Surface-plane padding", f"{config.surface_plane_padding_nm:.3f} nm"),
@@ -846,7 +882,10 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     -----
     Every cropped residue type is physically screened. ``target_resname``
     selects only the density population and target-specific report fields. The
-    GRO, geometry YAML, and log are promoted together after all three succeed.
+    slit and guest input files define disjoint framework/mobile components;
+    overlapping residue names are rejected and the source-derived roles are
+    written to the geometry YAML. The GRO, geometry YAML, and log are promoted
+    together after all three succeed.
     Positions, optional velocities, box lengths, and geometry are expressed in
     the same output frame with the slit normal on ``z``. Translations and
     whole-residue wrapping affect positions only. If either input contains
@@ -859,6 +898,8 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     slit_system = _load_gro_system(config.slit_path)
     _validate_slit_coordinates(slit_system)
     _validate_fill_config(config, guest_system, slit_system)
+    framework_resnames = tuple(sorted(set(slit_system.residue_names)))
+    mobile_resnames = tuple(sorted(set(guest_system.residue_names)))
 
     final_box_lengths = slit_system.box_lengths.copy()
     centered_slit_coordinates = slit_system.coordinates.copy()
@@ -1004,8 +1045,8 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     density_estimate = _compute_density_estimate(
         guest_system=guest_system,
         framework_system=slit_system,
-        framework_coordinates=centered_slit_coordinates,
-        slit_geometry=input_slit_geometry,
+        framework_coordinates=output_slit_coordinates,
+        slit_geometry=output_slit_geometry,
         surface_plane_padding_nm=config.surface_plane_padding_nm,
         target_resname=config.target_resname,
         remaining_guest_molecules=remaining_guest_molecules,
@@ -1045,6 +1086,8 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         slit_bond_template_count=len(ring_check_cache.slit_bond_templates),
         slit_bond_count_checked=len(ring_check_cache.slit_bond_geometries),
         density_estimate=density_estimate,
+        framework_resnames=framework_resnames,
+        mobile_resnames=mobile_resnames,
         slit_atom_count=slit_system.atom_count,
         final_atom_count=final_atom_count,
         final_residue_count=final_residue_count,
@@ -1078,6 +1121,11 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
             staging_paths[metadata_path],
             output_slit_geometry,
             config.surface_plane_padding_nm,
+            framework_resnames=framework_resnames,
+            mobile_resnames=mobile_resnames,
+            target_resname=config.target_resname,
+            framework_atom_count=slit_system.atom_count,
+            framework_residue_count=len(slit_system.residue_spans),
         )
         staging_paths[config.log_path].write_text(report_text, encoding="utf-8")
     return report

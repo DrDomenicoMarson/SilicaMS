@@ -141,6 +141,14 @@ def test_fill_slit_writes_merged_gro_and_human_report(
     metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
     assert metadata["schema_version"] == 1
     assert metadata["slit_geometry"]["normal_axis_name"] == "z"
+    assert metadata["slit_components"] == {
+        "selection_basis": "separate_slit_and_guest_inputs",
+        "framework_resnames": ["SUR"],
+        "mobile_resnames": ["THY"],
+        "target_resname": "THY",
+        "framework_atom_count": 6,
+        "framework_residue_count": 2,
+    }
     assert PeriodicSlitGeometry.from_dict(metadata["slit_geometry"]) == (
         report.output_slit_geometry
     )
@@ -157,6 +165,8 @@ def test_fill_slit_writes_merged_gro_and_human_report(
     assert "Output" in log_text
     assert "General cutoff" in log_text
     assert "0.100 nm" in log_text
+    assert "Framework residue names" in log_text
+    assert "Mobile residue names" in log_text
 
 
 @pytest.mark.parametrize("normal_axis", (0, 1, 2))
@@ -350,6 +360,25 @@ def test_fill_slit_filters_every_residue_type_and_reports_each_one(
     assert summaries["THY"].remaining_residues == 1
     assert report.remaining_guest_molecules == 1
     assert set(output_system.residue_names) == {"SUR", "THY", "K"}
+    density_report = density_mod.estimate_guest_density(
+        density_mod.SlitDensityConfig(
+            input_path=output_path,
+            slit_geometry_path=output_path.with_suffix(".yml"),
+            target_resname="THY",
+            framework_resnames=("SUR",),
+            mobile_resnames=("K",),
+            density_probe_radii_nm=(0.0,),
+            density_sample_count=100,
+            density_seed_count=1,
+            random_seed=9,
+        )
+    )
+    assert density_report.framework_resnames == ("SUR",)
+    assert density_report.mobile_resnames == ("K", "THY")
+    assert (
+        density_report.density_estimate.probe_estimates
+        == report.density_estimate.probe_estimates
+    )
     assert "Residue filtering: NA" in output_path.with_suffix(".log").read_text(
         encoding="utf-8"
     )
@@ -583,6 +612,7 @@ def test_density_analysis_is_reproducible_and_cli_helpers_accept_argv(
     config = density_mod.SlitDensityConfig(
         input_path=merged_path,
         log_path=density_log_path,
+        framework_resnames=("SUR",),
         density_probe_radii_nm=(0.0,),
         density_sample_count=600,
         density_seed_count=2,
@@ -596,6 +626,8 @@ def test_density_analysis_is_reproducible_and_cli_helpers_accept_argv(
             str(merged_path),
             "--log",
             str(density_log_path),
+            "--framework-resname",
+            "SUR",
             "--density-probe-radius",
             "0.0",
             "--density-samples",
@@ -649,6 +681,27 @@ def test_fill_slit_raises_when_target_residue_missing(
                 guest_path=guest_path,
                 slit_path=slit_path,
                 output_path=module_workspace.root / "unused.gro",
+            )
+        )
+
+
+def test_fill_slit_rejects_residue_names_shared_by_both_sources(
+    module_workspace, write_basic_slit, write_guest_box
+) -> None:
+    """Reject component names that become ambiguous in the merged GRO."""
+
+    guest_path = module_workspace.root / "guest_ambiguous.gro"
+    slit_path = module_workspace.root / "slit_ambiguous.gro"
+    write_guest_box(guest_path, residue_name="SUR")
+    write_basic_slit(slit_path)
+
+    with pytest.raises(ValueError, match="both the slit and guest inputs.*SUR"):
+        slit_fill_mod.fill_slit(
+            slit_fill_mod.SlitFillConfig(
+                guest_path=guest_path,
+                slit_path=slit_path,
+                output_path=module_workspace.root / "unused_ambiguous.gro",
+                target_resname="SUR",
             )
         )
 

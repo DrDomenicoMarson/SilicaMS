@@ -147,7 +147,9 @@ The equivalent Python APIs are `sms.fill_slit(...)` and
 axis, two fitted mean surface planes, projected interfacial area, geometric
 slit volume, surface support count, and normal RMS roughness. Construction
 writes this unit-explicit schema-v1 geometry to `<system_name>.yml`; filling
-writes the output-frame geometry to `<output_stem>.yml`.
+writes the output-frame geometry and slit/guest component provenance to
+`<output_stem>.yml`. Provenance records the source-derived residue names and
+counts, but standalone density selection remains explicit.
 
 Filling puts the slit normal on the output z axis, applying the same axis
 permutation to coordinates, any input velocities, box lengths, and geometry.
@@ -159,7 +161,7 @@ The standalone density workflow, its configuration, and its report types live
 in `silicams.slit_density`; filling lives in `silicams.slit_fill`. The package-root
 APIs shown above are unchanged. After updating an existing installation, rerun
 your installation command (including for editable installs) to refresh the
-`silicams-slit-density` console entry point. Its name and options are unchanged.
+`silicams-slit-density` console entry point.
 
 Filling supports mixed guest reservoirs. Cropping, surface-plane filtering,
 the general all-atom cutoff, and applicable ring-crossing checks are applied
@@ -168,6 +170,16 @@ density calculations and the target-specific summary fields; the structured
 report also includes per-residue-name filtering counts for the complete
 mixture. Monatomic and non-aromatic residues skip only the bond or ring check
 that is physically inapplicable.
+
+Standalone density analysis classifies components with exact residue-name
+selectors. `framework_resnames` lists atoms that exclude probe volume;
+`mobile_resnames` lists non-target mobile components, and `target_resname` is
+automatically mobile and selects only the density numerator. The default
+framework selector is `("OM", "SI", "SL", "SLG")`, the native bare-silica
+vocabulary. Functional groups such as `TPS`/`TPSG` and co-guests such as water
+or ions must be classified explicitly. Supplying any `--framework-resname`
+options replaces the default set; `--mobile-resname` is repeatable. Overlapping
+selectors, unclassified residues, or an empty resolved framework are errors.
 
 Numeric configuration values are validated before construction: NaN and
 infinite values are rejected, and counts, indices, repetitions, and seeds must

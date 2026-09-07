@@ -32,11 +32,13 @@ from .slit_geometry import (
 FloatArray = NDArray[np.float64]
 
 DEFAULT_DENSITY_PROBE_RADII_NM = (0.00, 0.14, 0.20)
+DEFAULT_FRAMEWORK_RESNAMES = ("OM", "SI", "SL", "SLG")
 GRAMS_PER_DA = 1.66053906660e-24
 CUBIC_CENTIMETERS_PER_NM3 = 1.0e-21
 
 __all__ = [
     "DEFAULT_DENSITY_PROBE_RADII_NM",
+    "DEFAULT_FRAMEWORK_RESNAMES",
     "DensityProbeEstimate",
     "DensityEstimate",
     "SlitDensityConfig",
@@ -146,6 +148,14 @@ class SlitDensityConfig:
         never discovered automatically.
     target_resname : str, optional
         Residue name used to identify guest molecules.
+    framework_resnames : tuple[str, ...], optional
+        Exact residue names classified as the slit framework. The default
+        contains the silica residue names emitted by SilicaMS. Supplying this
+        field replaces that default; functional groups must be listed
+        explicitly.
+    mobile_resnames : tuple[str, ...], optional
+        Exact non-target residue names classified as mobile components. The
+        target residue is always classified as mobile automatically.
     density_probe_radii_nm : tuple[float, ...], optional
         Probe radii used for probe-free slit-volume density estimates.
     density_sample_count : int, optional
@@ -164,6 +174,8 @@ class SlitDensityConfig:
     slit_geometry: PeriodicSlitGeometry | None = None
     slit_geometry_path: Path | None = None
     target_resname: str = "THY"
+    framework_resnames: tuple[str, ...] = DEFAULT_FRAMEWORK_RESNAMES
+    mobile_resnames: tuple[str, ...] = ()
     density_probe_radii_nm: tuple[float, ...] = DEFAULT_DENSITY_PROBE_RADII_NM
     density_sample_count: int = 200000
     density_seed_count: int = 5
@@ -175,6 +187,12 @@ class SlitDensityConfig:
 
         if not self.density_probe_radii_nm:
             raise ValueError("At least one density probe radius must be provided.")
+        framework_resnames = _normalize_resname_selectors(
+            "framework_resnames", self.framework_resnames
+        )
+        mobile_resnames = _normalize_resname_selectors(
+            "mobile_resnames", self.mobile_resnames
+        )
         if self.slit_geometry is not None and self.slit_geometry_path is not None:
             raise ValueError(
                 "Supply either slit_geometry or slit_geometry_path, not both."
@@ -203,6 +221,8 @@ class SlitDensityConfig:
             if random_seed < 0:
                 raise ValueError("The random seed must be non-negative.")
         object.__setattr__(self, "surface_plane_padding_nm", surface_plane_padding_nm)
+        object.__setattr__(self, "framework_resnames", framework_resnames)
+        object.__setattr__(self, "mobile_resnames", mobile_resnames)
         object.__setattr__(self, "density_probe_radii_nm", probe_radii)
         object.__setattr__(self, "density_sample_count", density_sample_count)
         object.__setattr__(self, "density_seed_count", density_seed_count)
@@ -220,9 +240,14 @@ class SlitDensityReport:
     guest_atom_count : int
         Number of target guest atoms found in the merged structure.
     framework_atom_count : int
-        Number of non-target atoms treated as the slit framework.
+        Number of explicitly selected atoms treated as the slit framework.
     framework_residue_count : int
-        Number of non-target residues treated as the slit framework.
+        Number of explicitly selected residues treated as the slit framework.
+    framework_resnames : tuple[str, ...]
+        Framework residue names present in the analyzed structure.
+    mobile_resnames : tuple[str, ...]
+        Mobile residue names present in the analyzed structure, including the
+        target residue.
     slit_geometry : PeriodicSlitGeometry
         Slit geometry used to define the sampled mean-plane interval.
     density_estimate : DensityEstimate
@@ -233,8 +258,147 @@ class SlitDensityReport:
     guest_atom_count: int
     framework_atom_count: int
     framework_residue_count: int
+    framework_resnames: tuple[str, ...]
+    mobile_resnames: tuple[str, ...]
     slit_geometry: PeriodicSlitGeometry
     density_estimate: DensityEstimate
+
+
+def _normalize_resname_selectors(
+    field_name: str, residue_names: Sequence[str]
+) -> tuple[str, ...]:
+    """Validate and normalize one exact residue-name selector sequence.
+
+    Parameters
+    ----------
+    field_name : str
+        Configuration field name used in validation messages.
+    residue_names : sequence[str]
+        Exact GRO residue names to normalize.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Residue names in caller order with native string values.
+
+    Raises
+    ------
+    TypeError
+        Raised when a selector is not a string.
+    ValueError
+        Raised when a selector is empty, contains surrounding whitespace, or
+        is repeated.
+    """
+
+    if isinstance(residue_names, str):
+        raise TypeError(f"{field_name} must be a sequence of residue names.")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for residue_name in residue_names:
+        if not isinstance(residue_name, str):
+            raise TypeError(f"Every {field_name} selector must be a string.")
+        if not residue_name or residue_name != residue_name.strip():
+            raise ValueError(
+                f"Every {field_name} selector must be a non-empty residue name "
+                "without surrounding whitespace."
+            )
+        if residue_name in seen:
+            raise ValueError(
+                f"Residue name {residue_name!r} is repeated in {field_name}."
+            )
+        seen.add(residue_name)
+        normalized.append(residue_name)
+    return tuple(normalized)
+
+
+def _residue_counts_by_name(system: _GroSystem) -> dict[str, int]:
+    """Count contiguous residues by exact residue name.
+
+    Parameters
+    ----------
+    system : _GroSystem
+        Loaded GRO records with contiguous residue spans.
+
+    Returns
+    -------
+    dict[str, int]
+        Residue counts keyed by exact residue name.
+    """
+
+    counts: dict[str, int] = {}
+    for residue_span in system.residue_spans:
+        counts[residue_span.residue_name] = (
+            counts.get(residue_span.residue_name, 0) + 1
+        )
+    return counts
+
+
+def _resolve_component_resnames(
+    merged_system: _GroSystem,
+    target_resname: str,
+    framework_resnames: tuple[str, ...],
+    mobile_resnames: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Resolve an exhaustive, disjoint component classification.
+
+    Parameters
+    ----------
+    merged_system : _GroSystem
+        Merged framework-plus-mobile structure.
+    target_resname : str
+        Density target, which is always classified as mobile.
+    framework_resnames : tuple[str, ...]
+        Exact residue names selected as framework.
+    mobile_resnames : tuple[str, ...]
+        Exact non-target residue names selected as mobile.
+
+    Returns
+    -------
+    tuple[tuple[str, ...], tuple[str, ...]]
+        Sorted framework and mobile residue names that are present in the
+        merged structure.
+
+    Raises
+    ------
+    ValueError
+        Raised when selectors overlap, a residue remains unclassified, or no
+        framework residue is present.
+    """
+
+    framework = set(framework_resnames)
+    mobile = set(mobile_resnames)
+    mobile.add(target_resname)
+    overlap = sorted(framework & mobile)
+    if overlap:
+        raise ValueError(
+            "Residue names cannot be classified as both framework and mobile: "
+            + ", ".join(overlap)
+            + "."
+        )
+
+    residue_counts = _residue_counts_by_name(merged_system)
+    present = set(residue_counts)
+    unclassified = sorted(present - framework - mobile)
+    if unclassified:
+        details = ", ".join(
+            f"{residue_name} ({residue_counts[residue_name]} residues)"
+            for residue_name in unclassified
+        )
+        raise ValueError(
+            f"Unclassified residue names: {details}. Classify every component "
+            "with framework_resnames or mobile_resnames; target_resname is "
+            "automatically mobile."
+        )
+
+    present_framework = tuple(sorted(present & framework))
+    if not present_framework:
+        raise ValueError(
+            "The input GRO file does not contain any residues selected by "
+            "framework_resnames, so no framework is available for probe-free "
+            "volume estimation."
+        )
+    return present_framework, tuple(sorted(present & mobile))
 
 
 def _resolve_density_config(config: SlitDensityConfig) -> SlitDensityConfig:
@@ -274,8 +438,8 @@ def _validate_density_config(
     Raises
     ------
     ValueError
-        Raised when the target residue is missing or when the input file does
-        not contain any framework atoms.
+        Raised when the target residue is missing. Component-selection
+        validation is performed separately after this check.
     """
 
     if config.target_resname not in merged_system.residue_names:
@@ -284,16 +448,6 @@ def _validate_density_config(
             f"Residue name {config.target_resname!r} was not found in {config.input_path}. "
             f"Available residue names: {', '.join(available_residues)}"
         )
-    if all(
-        residue_name == config.target_resname
-        for residue_name in merged_system.residue_names
-    ):
-        raise ValueError(
-            "The input GRO file does not contain any non-target atoms, so no slit "
-            "framework is available for probe-free volume estimation."
-        )
-
-
 def _compute_target_residue_mass_da(
     guest_system: _GroSystem,
     target_resname: str,
@@ -682,31 +836,34 @@ def _compute_density_estimate(
 
 
 def _build_framework_system(
-    merged_system: _GroSystem, target_resname: str
+    merged_system: _GroSystem, framework_resnames: tuple[str, ...]
 ) -> _GroSystem:
-    """Extract independent non-target arrays from a merged slit system.
+    """Extract explicitly selected framework arrays from a merged slit system.
 
     Parameters
     ----------
     merged_system : _GroSystem
         Merged atom records in file order, including optional velocities.
-    target_resname : str
-        Exact residue name to exclude from the framework.
+    framework_resnames : tuple[str, ...]
+        Exact residue names to include in the framework.
 
     Returns
     -------
     _GroSystem
-        Non-target atoms in their original order, with copied coordinates,
-        identifiers, box lengths, optional velocities, and rebuilt contiguous
-        residue indexing. Original atom/residue identifiers are retained.
+        Selected framework atoms in their original order, with copied
+        coordinates, identifiers, box lengths, optional velocities, and
+        rebuilt contiguous residue indexing. Original atom/residue identifiers
+        are retained.
     """
 
-    framework_atom_mask = np.array(
-        [
-            residue_name != target_resname
+    selected_resnames = set(framework_resnames)
+    framework_atom_mask = np.fromiter(
+        (
+            residue_name in selected_resnames
             for residue_name in merged_system.residue_names
-        ],
+        ),
         dtype=bool,
+        count=merged_system.atom_count,
     )
     framework_residue_ids = merged_system.residue_ids[framework_atom_mask].copy()
     framework_residue_names = [
@@ -863,6 +1020,8 @@ def _build_density_report_text(
     framework = _format_value_lines(
         "Framework",
         [
+            ("Framework residue names", ", ".join(report.framework_resnames)),
+            ("Mobile residue names", ", ".join(report.mobile_resnames)),
             ("Framework atoms", str(report.framework_atom_count)),
             ("Framework residues", str(report.framework_residue_count)),
         ],
@@ -931,16 +1090,19 @@ def estimate_guest_density(config: SlitDensityConfig) -> SlitDensityReport:
 
     Notes
     -----
-    All non-target residues are treated as framework. Geometry is supplied
-    explicitly, loaded from the explicitly named YAML file, or inferred from
-    hydroxylated surface silicon; neighboring metadata is never discovered
-    automatically. The text report is written to the resolved log path.
+    Framework and mobile components are selected by exact residue name. The
+    target is always mobile, selector overlap is rejected, and every residue
+    present in the input must be classified. Geometry is supplied explicitly,
+    loaded from the explicitly named YAML file, or inferred from hydroxylated
+    surface silicon; neighboring metadata is never discovered automatically.
+    The text report is written to the resolved log path.
 
     Raises
     ------
     ValueError
-        Raised for invalid input structures or geometry, a missing target
-        population or framework, or unsupported atom names.
+        Raised for invalid input structures or geometry, overlapping or
+        incomplete component selectors, a missing target population or
+        framework, or unsupported atom names.
     OSError
         Raised when an input cannot be read or the report cannot be written.
     """
@@ -948,10 +1110,16 @@ def estimate_guest_density(config: SlitDensityConfig) -> SlitDensityReport:
     config = _resolve_density_config(config)
     merged_system = _load_gro_system(config.input_path)
     _validate_density_config(config, merged_system)
+    framework_resnames, mobile_resnames = _resolve_component_resnames(
+        merged_system=merged_system,
+        target_resname=config.target_resname,
+        framework_resnames=config.framework_resnames,
+        mobile_resnames=config.mobile_resnames,
+    )
 
     framework_system = _build_framework_system(
         merged_system=merged_system,
-        target_resname=config.target_resname,
+        framework_resnames=framework_resnames,
     )
     # Density estimation wraps framework coordinates before the periodic
     # neighbor search, so nominal out-of-box coordinates are harmless here and
@@ -985,6 +1153,8 @@ def estimate_guest_density(config: SlitDensityConfig) -> SlitDensityReport:
         guest_atom_count=guest_atom_count,
         framework_atom_count=framework_system.atom_count,
         framework_residue_count=len(framework_system.residue_spans),
+        framework_resnames=framework_resnames,
+        mobile_resnames=mobile_resnames,
         slit_geometry=slit_geometry,
         density_estimate=density_estimate,
     )
@@ -1000,7 +1170,8 @@ def _build_density_argument_parser() -> argparse.ArgumentParser:
     Returns
     -------
     argparse.ArgumentParser
-        Parser with the density command's existing options and defaults.
+        Parser with the density command's component selectors, numerical
+        options, paths, and defaults.
     """
 
     parser = argparse.ArgumentParser(
@@ -1039,6 +1210,23 @@ def _build_density_argument_parser() -> argparse.ArgumentParser:
         "--target-resname",
         default=SlitDensityConfig.target_resname,
         help="Residue name used to identify guest molecules. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--framework-resname",
+        action="append",
+        help=(
+            "Exact residue name classified as framework. Repeat for multiple "
+            "names. Supplying any values replaces the default framework set "
+            f"{', '.join(DEFAULT_FRAMEWORK_RESNAMES)}."
+        ),
+    )
+    parser.add_argument(
+        "--mobile-resname",
+        action="append",
+        help=(
+            "Exact non-target residue name classified as mobile. Repeat for "
+            "multiple names. The target residue is automatically mobile."
+        ),
     )
     parser.add_argument(
         "--density-probe-radius",
@@ -1126,6 +1314,12 @@ def estimate_guest_density_main(argv: Sequence[str] | None = None) -> SlitDensit
         log_path=args.log,
         slit_geometry_path=args.slit_geometry,
         target_resname=args.target_resname,
+        framework_resnames=(
+            tuple(args.framework_resname)
+            if args.framework_resname is not None
+            else DEFAULT_FRAMEWORK_RESNAMES
+        ),
+        mobile_resnames=tuple(args.mobile_resname or ()),
         density_probe_radii_nm=probe_radii,
         density_sample_count=args.density_samples,
         density_seed_count=args.density_seed_count,

@@ -21,7 +21,13 @@ For example, reuse geometry written by the construction workflow explicitly:
 
    silicams-slit-density \
        --input filled.gro \
-       --slit-geometry filled.yml
+       --slit-geometry filled.yml \
+       --framework-resname OM \
+       --framework-resname SI \
+       --framework-resname SL \
+       --framework-resname SLG \
+       --framework-resname TPS \
+       --framework-resname TPSG
 
 The equivalent Python entry points are ``silicams.fill_slit`` and
 ``silicams.estimate_guest_density``. Both return structured dataclass reports.
@@ -29,7 +35,7 @@ Density's implementation and types are in ``silicams.slit_density``; filling
 remains in ``silicams.slit_fill``. Package-root imports remain unchanged.
 After updating an existing installation, rerun the installation command,
 including for editable installs, to refresh the ``silicams-slit-density``
-console entry point. The command name and its options have not changed.
+console entry point.
 
 The filling implementation preserves complete guest residues and supports
 mixed reservoirs. It applies center cropping, the optional surface-plane
@@ -43,7 +49,20 @@ object through Python or as an explicit schema-v1 YAML path through either
 interface. When neither is supplied, SilicaMS infers two mean planes from
 hydroxylated surface Si atoms. It never discovers a neighboring YAML file
 automatically. Filling writes the geometry after output-axis permutation to
-``<output_stem>.yml``.
+``<output_stem>.yml`` together with the source-derived framework/mobile
+residue names and counts. This provenance is descriptive; standalone analysis
+does not silently use it as a selector. Filling rejects a residue name present
+in both source files because that name would become ambiguous after merging.
+
+Standalone analysis classifies every residue name explicitly.
+``framework_resnames`` identifies the slit atoms used for probe exclusion;
+``mobile_resnames`` identifies non-target mobile species; and
+``target_resname`` is automatically mobile and selects only the density
+numerator. The default framework names are ``OM``, ``SI``, ``SL``, and
+``SLG``. User-defined graft names and every co-guest must be added explicitly.
+On the CLI, repeat ``--framework-resname`` or ``--mobile-resname`` as needed;
+supplying any framework options replaces the default set. Overlap,
+unclassified residue names, and an empty resolved framework are errors.
 
 The output slit normal is on ``z``. Coordinates, optional input velocities,
 box lengths, and geometry use the same axis permutation. Centering and
@@ -73,9 +92,11 @@ The signed ``surface_plane_padding_nm`` contracts the mean-plane interval when
 positive and expands it when negative. The resulting width must stay positive
 and no larger than the normal box length. Density sampling is uniform inside
 this padded geometric interval. Framework van der Waals radii enlarged by the
-probe radius determine the **probe-free fraction and volume**. These values do
-not test connectivity or reachability and therefore are not experimental or
-connectivity-based accessible pore volumes.
+probe radius determine the **probe-free fraction and volume**. Other mobile
+mixture components do not exclude this framework-accessible volume, so target
+species analyzed with the same probe radius share one denominator. These
+values do not test connectivity or reachability and therefore are not
+experimental or connectivity-based accessible pore volumes.
 
 Density estimates retain the raw probe-radius, seed, fraction, volume, and
 density values. Any downstream plotting workflow must export companion plot
@@ -94,6 +115,8 @@ Python example
        sms.SlitDensityConfig(
            input_path=Path("filled.gro"),
            slit_geometry_path=Path("filled.yml"),
+           framework_resnames=("OM", "SI", "SL", "SLG", "TPS", "TPSG"),
+           mobile_resnames=("SOL",),
            surface_plane_padding_nm=0.05,
            random_seed=17,
        )

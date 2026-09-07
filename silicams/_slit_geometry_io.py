@@ -252,6 +252,12 @@ def _write_slit_geometry_metadata(
     path: Path,
     slit_geometry: PeriodicSlitGeometry,
     padding_nm: float,
+    *,
+    framework_resnames: tuple[str, ...] | None = None,
+    mobile_resnames: tuple[str, ...] | None = None,
+    target_resname: str | None = None,
+    framework_atom_count: int | None = None,
+    framework_residue_count: int | None = None,
 ) -> None:
     """Write schema-v1 output geometry and analysis metadata.
 
@@ -263,11 +269,23 @@ def _write_slit_geometry_metadata(
         Geometry expressed in the output coordinate frame.
     padding_nm : float
         Signed plane padding used by filtering and density analysis.
+    framework_resnames : tuple[str, ...] or None, optional
+        Exact framework residue names resolved from the slit input. When
+        omitted, component provenance is not written.
+    mobile_resnames : tuple[str, ...] or None, optional
+        Exact mobile residue names resolved from the guest input.
+    target_resname : str or None, optional
+        Mobile residue name used for the density numerator.
+    framework_atom_count : int or None, optional
+        Number of leading framework atoms written to the merged GRO.
+    framework_residue_count : int or None, optional
+        Number of leading framework residues written to the merged GRO.
 
     Raises
     ------
     ValueError
-        Raised when the signed padding gives an invalid slit width.
+        Raised when the signed padding gives an invalid slit width or only
+        part of the optional component provenance is supplied.
     OSError
         Raised when the destination cannot be written. Staging and promotion
         remain the calling workflow's responsibility.
@@ -284,4 +302,25 @@ def _write_slit_geometry_metadata(
             ),
         },
     }
+    component_values = (
+        framework_resnames,
+        mobile_resnames,
+        target_resname,
+        framework_atom_count,
+        framework_residue_count,
+    )
+    if any(value is not None for value in component_values):
+        if any(value is None for value in component_values):
+            raise ValueError(
+                "Component provenance requires framework/mobile residue names, "
+                "the target residue, and framework atom/residue counts together."
+            )
+        payload["slit_components"] = {
+            "selection_basis": "separate_slit_and_guest_inputs",
+            "framework_resnames": list(framework_resnames),
+            "mobile_resnames": list(mobile_resnames),
+            "target_resname": target_resname,
+            "framework_atom_count": framework_atom_count,
+            "framework_residue_count": framework_residue_count,
+        }
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

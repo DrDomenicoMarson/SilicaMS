@@ -84,6 +84,7 @@ def test_density_public_exports_and_dataclass_serialization(density_case) -> Non
         input_path=density_case.input_path,
         slit_geometry=density_case.geometry,
         target_resname="SOL",
+        framework_resnames=("SIL", "ADS", "ION"),
         density_sample_count=100,
         density_seed_count=2,
         density_probe_radii_nm=(0.0, 0.14),
@@ -92,13 +93,14 @@ def test_density_public_exports_and_dataclass_serialization(density_case) -> Non
     report = sms.estimate_guest_density(config)
     assert density_mod.__all__ == [
         "DEFAULT_DENSITY_PROBE_RADII_NM",
+        "DEFAULT_FRAMEWORK_RESNAMES",
         "DensityProbeEstimate",
         "DensityEstimate",
         "SlitDensityConfig",
         "SlitDensityReport",
         "estimate_guest_density",
     ]
-    for name in density_mod.__all__[1:]:
+    for name in density_mod.__all__[2:]:
         assert getattr(sms, name) is getattr(density_mod, name)
         assert name not in fill_mod.__all__
     assert not hasattr(fill_mod, "SlitDensityConfig")
@@ -143,6 +145,8 @@ def test_density_defaults_and_numpy_integer_normalization() -> None:
     assert default.input_path == Path("merged_guest_slit_ring_check.gro")
     assert default.log_path is default.random_seed is None
     assert default.density_probe_radii_nm == (0.0, 0.14, 0.2)
+    assert default.framework_resnames == ("OM", "SI", "SL", "SLG")
+    assert default.mobile_resnames == ()
     assert default.density_sample_count == 200000
     assert default.density_seed_count == 5
     assert default.surface_plane_padding_nm == 0.0
@@ -154,6 +158,55 @@ def test_density_defaults_and_numpy_integer_normalization() -> None:
     )
     for name in ("density_sample_count", "density_seed_count", "random_seed"):
         assert type(getattr(config, name)) is int
+
+
+@pytest.mark.parametrize(
+    "field,value,error",
+    (
+        ("framework_resnames", ("SI", "SI"), ValueError),
+        ("framework_resnames", (" SI",), ValueError),
+        ("framework_resnames", "SI", TypeError),
+        ("mobile_resnames", (1,), TypeError),
+    ),
+)
+def test_density_component_selectors_are_exact_and_unique(
+    field, value, error
+) -> None:
+    """Reject malformed residue selectors before reading an input file."""
+
+    with pytest.raises(error):
+        density_mod.SlitDensityConfig(**{field: value})
+
+
+def test_density_requires_exhaustive_disjoint_component_selectors(
+    density_case,
+) -> None:
+    """Keep co-guests mobile and fail rather than guessing ambiguous roles."""
+
+    config = density_mod.SlitDensityConfig(
+        input_path=density_case.input_path,
+        slit_geometry=density_case.geometry,
+        target_resname="SOL",
+        framework_resnames=("SIL",),
+        mobile_resnames=("ADS", "ION"),
+        density_probe_radii_nm=(0.0,),
+        density_sample_count=100,
+        density_seed_count=1,
+        random_seed=7,
+    )
+    report = density_mod.estimate_guest_density(config)
+    assert report.framework_atom_count == report.framework_residue_count == 1
+    assert report.framework_resnames == ("SIL",)
+    assert report.mobile_resnames == ("ADS", "ION", "SOL")
+
+    with pytest.raises(ValueError, match=r"ION \(1 residues\)"):
+        density_mod.estimate_guest_density(
+            replace(config, mobile_resnames=("ADS",))
+        )
+    with pytest.raises(ValueError, match="both framework and mobile: SOL"):
+        density_mod.estimate_guest_density(
+            replace(config, framework_resnames=("SIL", "SOL"))
+        )
 
 
 @pytest.mark.parametrize(
@@ -172,12 +225,14 @@ def test_framework_and_target_selection_preserve_order_and_independence(
     density_case,
     with_velocities,
 ) -> None:
-    """Copy only non-target atoms and count repeated non-contiguous target ids."""
+    """Copy only selected framework atoms and count repeated target ids."""
 
     source = density_case.merged
     if not with_velocities:
         source = replace(source, velocities=None)
-    framework = density_mod._build_framework_system(source, "SOL")
+    framework = density_mod._build_framework_system(
+        source, ("SIL", "ADS", "ION")
+    )
     assert density_mod._count_target_molecules(source, "SOL") == (2, 4)
     assert density_mod._count_target_molecules(source, "MISSING") == (0, 0)
     assert framework.residue_names == ["SIL", "ADS", "ION"]
@@ -480,6 +535,7 @@ def test_standalone_density_api_cli_defaults_and_report(
         input_path=density_case.input_path,
         slit_geometry_path=metadata,
         target_resname="SOL",
+        framework_resnames=("SIL", "ADS", "ION"),
         density_sample_count=100,
         density_seed_count=2,
         density_probe_radii_nm=(0.0, 0.14),
@@ -496,6 +552,12 @@ def test_standalone_density_api_cli_defaults_and_report(
         str(metadata),
         "--target-resname",
         "SOL",
+        "--framework-resname",
+        "SIL",
+        "--framework-resname",
+        "ADS",
+        "--framework-resname",
+        "ION",
         "--density-samples",
         "100",
         "--density-seed-count",
@@ -517,6 +579,8 @@ def test_standalone_density_api_cli_defaults_and_report(
     assert "g/cm^3" in report_text and "nm^3" in report_text
     assert report.guest_molecule_count == 2 and report.guest_atom_count == 4
     assert report.framework_atom_count == report.framework_residue_count == 3
+    assert report.framework_resnames == ("ADS", "ION", "SIL")
+    assert report.mobile_resnames == ("SOL",)
     explicit = replace(config, log_path=log_path)
     assert density_mod._resolve_density_config(explicit) is explicit
     captured = capsys.readouterr()
@@ -593,7 +657,7 @@ def test_density_analysis_raises_without_framework(
         title="merged-no-framework",
     )
 
-    with pytest.raises(ValueError, match="does not contain any non-target atoms"):
+    with pytest.raises(ValueError, match="does not contain any residues selected"):
         density_mod.estimate_guest_density(
             density_mod.SlitDensityConfig(input_path=merged_path)
         )
@@ -616,6 +680,7 @@ def test_density_analysis_skips_nominal_box_warning(
         report = density_mod.estimate_guest_density(
             density_mod.SlitDensityConfig(
                 input_path=merged_path,
+                framework_resnames=("SUR",),
                 density_probe_radii_nm=(0.0,),
                 density_sample_count=200,
                 density_seed_count=1,
@@ -664,6 +729,7 @@ def test_density_requires_explicit_geometry_for_nonhydroxylated_framework(
         density_mod.estimate_guest_density(
             density_mod.SlitDensityConfig(
                 input_path=merged_path,
+                framework_resnames=("SIL",),
                 density_probe_radii_nm=(0.0,),
                 density_sample_count=100,
                 density_seed_count=1,
@@ -675,6 +741,7 @@ def test_density_requires_explicit_geometry_for_nonhydroxylated_framework(
         density_mod.SlitDensityConfig(
             input_path=merged_path,
             slit_geometry_path=geometry_path,
+            framework_resnames=("SIL",),
             density_probe_radii_nm=(0.0,),
             density_sample_count=300,
             density_seed_count=1,
