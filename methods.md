@@ -131,6 +131,13 @@ explicit flat ligand ITP and, for geminal sites, explicit generated cross
 terms. Silica scaffold and graft-junction parameters are taken from the
 resolved `SilicaTopologyModel`.
 
+Each flat ligand ITP must define exactly one `[ moleculetype ]`. Atom names and
+molecule-local indices are independently unique, and every `[ bonds ]`,
+`[ pairs ]`, `[ angles ]`, and `[ dihedrals ]` atom reference is validated
+against the declared `[ atoms ]` indices before assembly. Repeated interaction
+sections remain supported within the single molecule definition, while a
+second molecule definition is rejected rather than merged implicitly.
+
 ## Export and validation
 
 Finalization is idempotent. One immutable export snapshot defines atom and

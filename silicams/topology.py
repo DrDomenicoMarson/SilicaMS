@@ -1003,9 +1003,48 @@ class GromacsMoleculeType:
     dihedrals: tuple[GromacsDihedral, ...] = ()
 
 
+def _validate_interaction_atom_references(
+    source_path: str,
+    moleculetype_name: str,
+    section_name: str,
+    reference_rows: tuple[tuple[int, ...], ...],
+    defined_atom_indices: set[int],
+) -> None:
+    """Validate that every interaction index names a declared molecule atom.
+
+    Parameters
+    ----------
+    source_path : str
+        Topology source path used in validation errors.
+    moleculetype_name : str
+        Name of the single molecule type being validated.
+    section_name : str
+        Interaction section name without brackets.
+    reference_rows : tuple[tuple[int, ...], ...]
+        Atom-index references for each parsed interaction row.
+    defined_atom_indices : set[int]
+        Atom indices declared by the molecule's ``[ atoms ]`` rows.
+
+    Raises
+    ------
+    ValueError
+        Raised when an interaction row references one or more undefined atom
+        indices.
+    """
+
+    for row_number, atom_indices in enumerate(reference_rows, start=1):
+        missing_indices = sorted(set(atom_indices) - defined_atom_indices)
+        if missing_indices:
+            raise ValueError(
+                f"[ {section_name} ] row {row_number} in molecule type "
+                f"{moleculetype_name!r} from {source_path!r} references "
+                f"undefined atom indices {missing_indices}."
+            )
+
+
 @dataclass(frozen=True)
 class ParsedTopologyBundle:
-    """One parsed self-contained flat GROMACS topology bundle.
+    """One validated self-contained flat GROMACS topology bundle.
 
     Parameters
     ----------
@@ -1015,25 +1054,39 @@ class ParsedTopologyBundle:
         Parsed atom-type definitions.
     moleculetype : GromacsMoleculeType
         Parsed molecule-type payload.
+
+    Notes
+    -----
+    Atom names and indices must each be unique. Every bond, pair, angle, and
+    dihedral index must reference an atom declared by ``moleculetype``.
     """
 
     source_path: str
     atomtypes: tuple[GromacsAtomType, ...]
     moleculetype: GromacsMoleculeType
     atom_index_by_name: dict[str, int] = field(init=False, repr=False)
+    atom_by_index: dict[int, GromacsAtom] = field(init=False, repr=False)
     bond_lookup: dict[tuple[str, str], GromacsBond] = field(init=False, repr=False)
     angle_lookup: dict[tuple[str, str, str], GromacsAngle] = field(init=False, repr=False)
 
     def __post_init__(self):
-        """Build local lookup tables and validate unique atom names.
+        """Validate one molecule and build its unambiguous lookup tables.
 
         Raises
         ------
         ValueError
-            Raised when atom names are duplicated inside the parsed molecule.
+            Raised when atom names or indices are duplicated, or an
+            interaction references an undefined atom index.
         """
         atom_index_by_name = {}
+        atom_by_index = {}
         for atom in self.moleculetype.atoms:
+            if atom.index in atom_by_index:
+                raise ValueError(
+                    "Flat ligand topologies require unique atom indices. "
+                    f"Found duplicate atom index {atom.index} in molecule type "
+                    f"{self.moleculetype.name!r} from {self.source_path!r}."
+                )
             if atom.atom_name in atom_index_by_name:
                 raise ValueError(
                     "Flat ligand topologies require unique atom names. "
@@ -1041,25 +1094,61 @@ class ParsedTopologyBundle:
                     f"{self.source_path!r}."
                 )
             atom_index_by_name[atom.atom_name] = atom.index
+            atom_by_index[atom.index] = atom
         object.__setattr__(self, "atom_index_by_name", atom_index_by_name)
+        object.__setattr__(self, "atom_by_index", atom_by_index)
 
-        atoms_by_index = {
-            atom.index: atom
-            for atom in self.moleculetype.atoms
-        }
+        defined_atom_indices = set(atom_by_index)
+        interaction_references = (
+            (
+                "bonds",
+                tuple((bond.atom_a, bond.atom_b) for bond in self.moleculetype.bonds),
+            ),
+            (
+                "pairs",
+                tuple((pair.atom_a, pair.atom_b) for pair in self.moleculetype.pairs),
+            ),
+            (
+                "angles",
+                tuple(
+                    (angle.atom_a, angle.atom_b, angle.atom_c)
+                    for angle in self.moleculetype.angles
+                ),
+            ),
+            (
+                "dihedrals",
+                tuple(
+                    (
+                        dihedral.atom_a,
+                        dihedral.atom_b,
+                        dihedral.atom_c,
+                        dihedral.atom_d,
+                    )
+                    for dihedral in self.moleculetype.dihedrals
+                ),
+            ),
+        )
+        for section_name, reference_rows in interaction_references:
+            _validate_interaction_atom_references(
+                source_path=self.source_path,
+                moleculetype_name=self.moleculetype.name,
+                section_name=section_name,
+                reference_rows=reference_rows,
+                defined_atom_indices=defined_atom_indices,
+            )
 
         bond_lookup = {}
         for bond in self.moleculetype.bonds:
-            name_a = atoms_by_index[bond.atom_a].atom_name
-            name_b = atoms_by_index[bond.atom_b].atom_name
+            name_a = atom_by_index[bond.atom_a].atom_name
+            name_b = atom_by_index[bond.atom_b].atom_name
             bond_lookup[tuple(sorted((name_a, name_b)))] = bond
         object.__setattr__(self, "bond_lookup", bond_lookup)
 
         angle_lookup = {}
         for angle in self.moleculetype.angles:
-            name_a = atoms_by_index[angle.atom_a].atom_name
-            name_b = atoms_by_index[angle.atom_b].atom_name
-            name_c = atoms_by_index[angle.atom_c].atom_name
+            name_a = atom_by_index[angle.atom_a].atom_name
+            name_b = atom_by_index[angle.atom_b].atom_name
+            name_c = atom_by_index[angle.atom_c].atom_name
             key = (
                 name_a if name_a <= name_c else name_c,
                 name_b,
@@ -1087,10 +1176,7 @@ class ParsedTopologyBundle:
             Raised when ``atom_name`` is not present in the bundle.
         """
         atom_index = self.atom_index_by_name[atom_name]
-        for atom in self.moleculetype.atoms:
-            if atom.index == atom_index:
-                return atom
-        raise KeyError(atom_name)
+        return self.atom_by_index[atom_index]
 
     def has_atom_name(self, atom_name):
         """Return whether the bundle contains one atom name.
@@ -1176,8 +1262,24 @@ def _strip_comment(line):
     return line.split(";", 1)[0].strip()
 
 
+@dataclass(frozen=True)
+class _FlatTopologyDocument:
+    """Tokenized flat topology sections with retained header multiplicity.
+
+    Parameters
+    ----------
+    rows_by_section : dict[str, list[list[str]]]
+        Tokenized rows aggregated by lowercase section name.
+    header_count_by_section : dict[str, int]
+        Number of times each section header occurred in the source document.
+    """
+
+    rows_by_section: dict[str, list[list[str]]]
+    header_count_by_section: dict[str, int]
+
+
 def _read_section_rows(path):
-    """Parse a flat topology document into section-token rows.
+    """Parse flat-topology rows while retaining repeated-header counts.
 
     Parameters
     ----------
@@ -1186,8 +1288,8 @@ def _read_section_rows(path):
 
     Returns
     -------
-    sections : dict[str, list[list[str]]]
-        Mapping from lowercase section names to tokenized rows.
+    document : _FlatTopologyDocument
+        Tokenized rows and occurrence counts for every lowercase section name.
 
     Raises
     ------
@@ -1196,6 +1298,7 @@ def _read_section_rows(path):
         data row appears before the first section header.
     """
     sections = {}
+    header_counts = {}
     section_name = None
     for line_number, raw_line in enumerate(
         Path(path).read_text(encoding="utf-8").splitlines(),
@@ -1215,6 +1318,7 @@ def _read_section_rows(path):
         if stripped.startswith("[") and stripped.endswith("]"):
             section_name = stripped[1:-1].strip().lower()
             sections.setdefault(section_name, [])
+            header_counts[section_name] = header_counts.get(section_name, 0) + 1
             continue
 
         if section_name is None:
@@ -1225,7 +1329,10 @@ def _read_section_rows(path):
 
         sections[section_name].append(stripped.split())
 
-    return sections
+    return _FlatTopologyDocument(
+        rows_by_section=sections,
+        header_count_by_section=header_counts,
+    )
 
 
 def _parse_atomtypes(path, rows):
@@ -1458,7 +1565,7 @@ def _parse_dihedrals(path, rows):
 
 
 def parse_flat_itp(path, moleculetype_name=""):
-    """Parse one simple self-contained flat GROMACS ``.itp`` file.
+    """Parse exactly one self-contained molecule type from a flat ``.itp``.
 
     Parameters
     ----------
@@ -1477,9 +1584,17 @@ def parse_flat_itp(path, moleculetype_name=""):
     ------
     ValueError
         Raised when required sections are missing, unsupported sections are
-        present, or the flat-input constraints are violated.
+        present, more than one molecule definition is present, atom names or
+        indices are duplicated, an interaction reference is undefined, or
+        another flat-input constraint is violated.
+
+    Notes
+    -----
+    Repeated interaction headers are concatenated for the single molecule
+    type. Repeated ``[ moleculetype ]`` headers are always rejected.
     """
-    sections = _read_section_rows(path)
+    document = _read_section_rows(path)
+    sections = document.rows_by_section
 
     unsupported_sections = sorted(
         section_name
@@ -1502,10 +1617,23 @@ def parse_flat_itp(path, moleculetype_name=""):
             f"{unsupported_sections}."
         )
 
+    moleculetype_header_count = document.header_count_by_section.get("moleculetype", 0)
+    if moleculetype_header_count > 1:
+        raise ValueError(
+            "Flat slit ligand topology input supports exactly one molecule "
+            f"definition. Found {moleculetype_header_count} [ moleculetype ] "
+            f"headers in {path!r}."
+        )
     if "moleculetype" not in sections or not sections["moleculetype"]:
         raise ValueError(f"Missing [ moleculetype ] section in {path!r}.")
     if "atoms" not in sections or not sections["atoms"]:
         raise ValueError(f"Missing [ atoms ] section in {path!r}.")
+    if len(sections["moleculetype"]) != 1:
+        raise ValueError(
+            "Flat slit ligand topology input requires exactly one "
+            f"[ moleculetype ] row. Found {len(sections['moleculetype'])} "
+            f"rows in {path!r}."
+        )
 
     moleculetype_row = sections["moleculetype"][0]
     if len(moleculetype_row) < 2:

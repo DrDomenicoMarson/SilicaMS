@@ -109,6 +109,14 @@ functionalized GROMACS ITP/TOP pair is required. Junction terms are controlled
 through `AmorphousSlitConfig.silica_topology` and
 `sms.default_silica_topology()`.
 
+The flat ligand parser accepts exactly one `[ moleculetype ]` definition per
+ITP. Atom names and molecule-local atom indices must each be unique, and every
+bond, pair, angle, and dihedral index must reference a declared atom. Repeated
+interaction sections, such as separate proper and improper `[ dihedrals ]`
+blocks, are concatenated within that single molecule definition. Multiple
+molecule definitions and ambiguous or dangling indices are rejected before
+topology assembly.
+
 ### Construction contact policy
 
 The contact defaults are deliberately permissive construction heuristics.

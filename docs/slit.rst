@@ -76,6 +76,13 @@ self-contained flat ligand ITP. Silica junction terms are configured through
 ``AmorphousSlitConfig.silica_topology``; use
 ``sms.default_silica_topology()`` to obtain an editable copy.
 
+The flat ligand ITP must contain exactly one ``[ moleculetype ]`` definition.
+Atom names and molecule-local indices must each be unique, and all bond, pair,
+angle, and dihedral indices must reference declared atoms. Repeated interaction
+sections are concatenated within that one molecule, allowing layouts such as
+separate proper and improper ``[ dihedrals ]`` blocks. Multiple molecule
+definitions and dangling interaction references are rejected before assembly.
+
 Contact settings and minimization
 ---------------------------------
 
