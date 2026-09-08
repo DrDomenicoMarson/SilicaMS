@@ -32,6 +32,7 @@ from silicams.matrix import Matrix
 from silicams.molecule import Molecule
 from silicams.slit_geometry import (
     PeriodicSlitGeometry,
+    minimum_image_displacements,
     pairwise_minimum_image_distances,
 )
 from silicams.slit_targets import (
@@ -57,6 +58,7 @@ from silicams.writers import GromacsTopologyWriter, StructureWriter
 
 
 _BRIDGE_OFFSET_NM = 0.09
+_BRIDGE_BOND_WARNING_RELATIVE_EXTENSION = 0.20
 _BRIDGE_STERIC_DISTANCE_CUTOFF_NM = 0.30
 _BRIDGE_STERIC_GRAPH_DEPTH = 6
 _BRIDGE_MIN_CLEARANCE_BY_TYPE_NM = {
@@ -490,6 +492,77 @@ class AmorphousSlitConfig:
 
 
 @dataclass(frozen=True)
+class SiloxaneBridgeBondFlag:
+    """One newly inserted Si--O bridge bond requiring attention.
+
+    Parameters
+    ----------
+    bridge_oxygen_atom_id : int
+        Source identifier of the newly inserted bridge oxygen.
+    silicon_atom_id : int
+        Source identifier of the bonded silicon atom.
+    bond_length_nm : float
+        Initial minimum-image Si--O distance in nanometers.
+    relative_extension_fraction : float
+        Fractional extension relative to the resolved topology equilibrium
+        Si--O bond length.
+
+    Notes
+    -----
+    A flag is an initial-geometry diagnostic, not a construction failure or a
+    statement about the geometry after energy minimization.
+    """
+
+    bridge_oxygen_atom_id: int
+    silicon_atom_id: int
+    bond_length_nm: float
+    relative_extension_fraction: float
+
+
+@dataclass(frozen=True)
+class SiloxaneBridgeGeometryDiagnostics:
+    """Initial geometry diagnostics for newly inserted siloxane bridges.
+
+    Parameters
+    ----------
+    equilibrium_bond_length_nm : float
+        Resolved topology equilibrium length for framework Si--O bonds, in
+        nanometers.
+    warning_relative_extension_fraction : float
+        Relative extension above which an inserted Si--O bond is flagged.
+    warning_bond_length_nm : float
+        Absolute bond-length threshold corresponding to the warning extension,
+        in nanometers.
+    inserted_bridge_count : int
+        Number of newly inserted bridge oxygens assessed.
+    inserted_bond_count : int
+        Number of newly inserted Si--O bridge bonds assessed.
+    flagged_bond_count : int
+        Number of assessed bonds longer than the warning threshold.
+    maximum_bond_length_nm : float or None
+        Longest assessed minimum-image bond length in nanometers, or ``None``
+        when no bridges were inserted.
+    flagged_bonds : tuple[SiloxaneBridgeBondFlag, ...]
+        Flagged bonds with explicit oxygen and silicon source identifiers.
+
+    Notes
+    -----
+    These diagnostics do not minimize or modify the structure and do not
+    reject a build. They identify initial inserted bonds that merit inspection
+    during the user's normal minimization and equilibration validation.
+    """
+
+    equilibrium_bond_length_nm: float
+    warning_relative_extension_fraction: float
+    warning_bond_length_nm: float
+    inserted_bridge_count: int
+    inserted_bond_count: int
+    flagged_bond_count: int
+    maximum_bond_length_nm: float | None
+    flagged_bonds: tuple[SiloxaneBridgeBondFlag, ...]
+
+
+@dataclass(frozen=True)
 class SlitPreparationReport:
     """Summary of a prepared or functionalized amorphous slit.
 
@@ -510,6 +583,10 @@ class SlitPreparationReport:
         Number of siloxane bridges introduced during surface editing.
     siloxane_distance_range_nm : tuple[float, float]
         Accepted ``Si-Si`` distance range used during custom surface editing.
+    siloxane_bridge_geometry_diagnostics : SiloxaneBridgeGeometryDiagnostics
+        Non-failing initial-geometry diagnostics for newly inserted bridge
+        bonds, evaluated against the resolved framework Si--O equilibrium
+        length.
     surface_fraction_tolerance : float
         Allowed absolute fraction deviation per silicon state for fallback
         target selection.
@@ -553,6 +630,7 @@ class SlitPreparationReport:
     site_ex: int
     siloxane_bridges: int
     siloxane_distance_range_nm: tuple[float, float]
+    siloxane_bridge_geometry_diagnostics: SiloxaneBridgeGeometryDiagnostics
     surface_fraction_tolerance: float
     random_seed: int | None
     used_surface_tolerance: bool
@@ -2140,11 +2218,109 @@ def _build_base_slit_system(config):
     )
 
 
+def _siloxane_bridge_geometry_diagnostics(system, silica_topology):
+    """Measure initial Si--O lengths for newly inserted siloxane bridges.
+
+    Parameters
+    ----------
+    system : SilicaSlit
+        Prepared slit whose surface-edit provenance identifies newly inserted
+        bridge oxygens and their bonded silicon atoms.
+    silica_topology : SilicaTopologyModel
+        Resolved silica topology supplying the framework Si--O equilibrium
+        bond length.
+
+    Returns
+    -------
+    diagnostics : SiloxaneBridgeGeometryDiagnostics
+        Non-failing initial-geometry summary. Bonds strictly longer than 120%
+        of the resolved equilibrium length are listed for inspection.
+
+    Raises
+    ------
+    TypeError
+        Raised when the resolved equilibrium Si--O bond length is not a real
+        number.
+    ValueError
+        Raised when the resolved equilibrium Si--O bond length is non-finite
+        or not positive.
+
+    Notes
+    -----
+    Bond lengths use the orthorhombic minimum-image convention. This function
+    does not minimize, mutate, or reject the prepared structure based on the
+    measured lengths.
+    """
+    equilibrium_bond_length_nm = finite_real(
+        "framework Si-O equilibrium bond length",
+        silica_topology.bond_terms.framework_si_o.length_nm,
+    )
+    if equilibrium_bond_length_nm <= 0.0:
+        raise ValueError("The framework Si-O equilibrium bond length must be positive.")
+
+    warning_relative_extension_fraction = (
+        _BRIDGE_BOND_WARNING_RELATIVE_EXTENSION
+    )
+    warning_bond_length_nm = equilibrium_bond_length_nm * (
+        1.0 + warning_relative_extension_fraction
+    )
+    inserted_bridge_records = tuple(
+        record
+        for record in system.surface_edit_history
+        if record.reason == "inserted_bridge_oxygen"
+    )
+    box_nm = np.asarray(system.box_nm, dtype=float)
+    bond_lengths = []
+    flagged_bonds = []
+    for record in inserted_bridge_records:
+        bridge_position = np.asarray(system.atom_position(record.atom_id), dtype=float)
+        silicon_positions = np.asarray(
+            [system.atom_position(atom_id) for atom_id in record.neighbor_ids],
+            dtype=float,
+        )
+        displacements = minimum_image_displacements(
+            bridge_position,
+            silicon_positions,
+            box_nm,
+        )
+        lengths_nm = np.linalg.norm(displacements, axis=1)
+        for silicon_atom_id, bond_length_nm in zip(
+            record.neighbor_ids,
+            lengths_nm,
+            strict=True,
+        ):
+            normalized_length_nm = float(bond_length_nm)
+            bond_lengths.append(normalized_length_nm)
+            if normalized_length_nm > warning_bond_length_nm:
+                flagged_bonds.append(
+                    SiloxaneBridgeBondFlag(
+                        bridge_oxygen_atom_id=record.atom_id,
+                        silicon_atom_id=silicon_atom_id,
+                        bond_length_nm=normalized_length_nm,
+                        relative_extension_fraction=(
+                            normalized_length_nm / equilibrium_bond_length_nm - 1.0
+                        ),
+                    )
+                )
+
+    return SiloxaneBridgeGeometryDiagnostics(
+        equilibrium_bond_length_nm=equilibrium_bond_length_nm,
+        warning_relative_extension_fraction=warning_relative_extension_fraction,
+        warning_bond_length_nm=warning_bond_length_nm,
+        inserted_bridge_count=len(inserted_bridge_records),
+        inserted_bond_count=len(bond_lengths),
+        flagged_bond_count=len(flagged_bonds),
+        maximum_bond_length_nm=max(bond_lengths, default=None),
+        flagged_bonds=tuple(flagged_bonds),
+    )
+
+
 def _build_report(
     config,
     derived_surface_target,
     target_attempt,
     initial_surface,
+    silica_topology,
     steric_settings=None,
     timing_summary=None,
 ):
@@ -2160,6 +2336,9 @@ def _build_report(
         Successful target realization payload.
     initial_surface : SiliconStateComposition
         Surface composition before custom condensation.
+    silica_topology : SilicaTopologyModel
+        Resolved silica topology used to evaluate inserted bridge lengths
+        against the exported framework Si--O equilibrium bond length.
     steric_settings : FunctionalizedSlitStericConfig or None, optional
         Permissive contact settings used during ligand placement. Bare-slit
         builds leave this as ``None``.
@@ -2188,6 +2367,9 @@ def _build_report(
         site_ex=0,
         siloxane_bridges=target_attempt.siloxane_bridges,
         siloxane_distance_range_nm=tuple(config.siloxane_distance_range_nm),
+        siloxane_bridge_geometry_diagnostics=(
+            _siloxane_bridge_geometry_diagnostics(system, silica_topology)
+        ),
         surface_fraction_tolerance=config.surface_fraction_tolerance,
         random_seed=config.random_seed,
         used_surface_tolerance=target_attempt.used_surface_tolerance,
@@ -2354,6 +2536,7 @@ def _prepare_bare_amorphous_slit_surface(config):
         derived_surface_target,
         target_attempt,
         build.initial_surface,
+        silica_topology,
         timing_summary=SlitTimingSummary(),
     )
     return SlitPreparationResult(
@@ -2462,6 +2645,7 @@ def _prepare_functionalized_amorphous_slit_surface(config, progress_tracker):
         derived_surface_target,
         target_attempt,
         build.initial_surface,
+        silica_topology,
         steric_settings=config.steric_settings,
         timing_summary=timing_summary,
     )

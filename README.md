@@ -130,6 +130,13 @@ They are intended to make exact slit and loading targets practical and to
 produce starting coordinates for staged molecular-mechanics minimization;
 they do not assert a force-field-valid local minimum.
 
+The preparation report includes non-failing
+`siloxane_bridge_geometry_diagnostics` for the Si--O bonds created by newly
+inserted bridge oxygens. Minimum-image bond lengths more than 20% above the
+resolved topology equilibrium Si--O length are listed with their bridge-O and
+Si source identifiers. This is an initial-coordinate inspection aid: it does
+not alter bridge placement, run a minimization, or reject the build.
+
 For ligand grafting, `FunctionalizedSlitStericConfig.clearance_scale=0.60`
 scales sums of covalent radii. Continuous values remain user-selectable. In
 the bundled TEPS series, `0.75` and `0.85` are useful progressively stricter

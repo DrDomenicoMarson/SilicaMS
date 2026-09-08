@@ -161,6 +161,115 @@ class _AngleRecordProbe:
     atom_type: str
 
 
+@dataclass(frozen=True)
+class _BridgeGeometrySystemProbe:
+    """Minimal slit-system interface for bridge-geometry diagnostics.
+
+    Parameters
+    ----------
+    box_nm : tuple[float, float, float]
+        Orthorhombic periodic box lengths in nanometers.
+    surface_edit_history : tuple[SurfaceEditRecord, ...]
+        Surface-edit provenance records exposed by the probe.
+    atom_positions_nm : tuple[tuple[int, tuple[float, float, float]], ...]
+        Atom positions keyed by source identifier, in nanometers.
+    """
+
+    box_nm: tuple[float, float, float]
+    surface_edit_history: tuple[sms.SurfaceEditRecord, ...]
+    atom_positions_nm: tuple[tuple[int, tuple[float, float, float]], ...]
+
+    def atom_position(self, atom_id):
+        """Return the position for one source atom identifier.
+
+        Parameters
+        ----------
+        atom_id : int
+            Source atom identifier to look up.
+
+        Returns
+        -------
+        position_nm : tuple[float, float, float]
+            Cartesian position in nanometers.
+
+        Raises
+        ------
+        KeyError
+            Raised when ``atom_id`` is absent from the probe.
+        """
+        try:
+            return dict(self.atom_positions_nm)[atom_id]
+        except KeyError:
+            raise KeyError(f"Unknown probe atom id {atom_id}.") from None
+
+
+def test_bridge_geometry_diagnostics_use_minimum_image_and_insertion_provenance():
+    """Flag only long, newly inserted bridge bonds under periodic geometry."""
+
+    system = _BridgeGeometrySystemProbe(
+        box_nm=(1.0, 1.0, 1.0),
+        surface_edit_history=(
+            sms.SurfaceEditRecord(
+                atom_id=10,
+                atom_type="O",
+                reason="inserted_bridge_oxygen",
+                neighbor_ids=(1, 2),
+            ),
+            sms.SurfaceEditRecord(
+                atom_id=20,
+                atom_type="O",
+                reason="removed_orphan_oxygen",
+                neighbor_ids=(3,),
+            ),
+        ),
+        atom_positions_nm=(
+            (1, (0.10, 0.0, 0.0)),
+            (2, (0.20, 0.0, 0.0)),
+            (10, (0.99, 0.0, 0.0)),
+        ),
+    )
+
+    diagnostics = slit_mod._siloxane_bridge_geometry_diagnostics(
+        system,
+        sms.default_silica_topology(),
+    )
+
+    assert diagnostics.equilibrium_bond_length_nm == pytest.approx(0.165)
+    assert diagnostics.warning_relative_extension_fraction == pytest.approx(0.20)
+    assert diagnostics.warning_bond_length_nm == pytest.approx(0.198)
+    assert diagnostics.inserted_bridge_count == 1
+    assert diagnostics.inserted_bond_count == 2
+    assert diagnostics.flagged_bond_count == 1
+    assert diagnostics.maximum_bond_length_nm == pytest.approx(0.21)
+    assert diagnostics.flagged_bonds == (
+        sms.SiloxaneBridgeBondFlag(
+            bridge_oxygen_atom_id=10,
+            silicon_atom_id=2,
+            bond_length_nm=pytest.approx(0.21),
+            relative_extension_fraction=pytest.approx(0.21 / 0.165 - 1.0),
+        ),
+    )
+
+
+def test_bridge_geometry_diagnostics_are_empty_without_inserted_bridges():
+    """Represent a bridge-free preparation without inventing a maximum."""
+
+    diagnostics = slit_mod._siloxane_bridge_geometry_diagnostics(
+        _BridgeGeometrySystemProbe(
+            box_nm=(1.0, 1.0, 1.0),
+            surface_edit_history=(),
+            atom_positions_nm=(),
+        ),
+        sms.default_silica_topology(),
+    )
+
+    assert diagnostics.inserted_bridge_count == 0
+    assert diagnostics.inserted_bond_count == 0
+    assert diagnostics.flagged_bond_count == 0
+    assert diagnostics.maximum_bond_length_nm is None
+    assert diagnostics.flagged_bonds == ()
+
+
 def itp_atom_rows(itp_path):
     """Return parsed ``[ atoms ]`` rows from one topology file.
 
@@ -804,6 +913,15 @@ class TestAmorphousSlitPreparation:
         assert self.prepared_report.preparation_diagnostics.stripped_silicon_total > 0
         assert self.prepared_report.preparation_diagnostics.removed_orphan_oxygen > 0
         assert self.prepared_report.preparation_diagnostics.inserted_bridge_oxygen == 235
+        bridge_geometry = self.prepared_report.siloxane_bridge_geometry_diagnostics
+        assert isinstance(bridge_geometry, sms.SiloxaneBridgeGeometryDiagnostics)
+        assert bridge_geometry.inserted_bridge_count == 235
+        assert bridge_geometry.inserted_bond_count == 470
+        assert bridge_geometry.flagged_bond_count == len(
+            bridge_geometry.flagged_bonds
+        )
+        assert bridge_geometry.maximum_bond_length_nm is not None
+        assert bridge_geometry.maximum_bond_length_nm > 0.30
         assert "SLX" not in self.prepared_result.system.molecule_counts
 
     def test_inserted_bridge_oxygen_respects_local_clearance_threshold(self):
@@ -1298,6 +1416,20 @@ class TestStoredAmorphousSlit:
         assert not (data["used_surface_tolerance"])
         assert data["experimental_target"]["surface_silicon_fraction"] == 1.0
         assert data["functionalization_steric_settings"] is None
+        bridge_geometry = data["siloxane_bridge_geometry_diagnostics"]
+        assert bridge_geometry["equilibrium_bond_length_nm"] == pytest.approx(0.165)
+        assert bridge_geometry["warning_bond_length_nm"] == pytest.approx(0.198)
+        assert bridge_geometry["inserted_bridge_count"] == 235
+        assert bridge_geometry["inserted_bond_count"] == 470
+        assert bridge_geometry["flagged_bond_count"] == len(
+            bridge_geometry["flagged_bonds"]
+        )
+        assert {
+            "bridge_oxygen_atom_id",
+            "silicon_atom_id",
+            "bond_length_nm",
+            "relative_extension_fraction",
+        } == set(bridge_geometry["flagged_bonds"][0])
         assert data["final_surface"]["q2_sites"] == self.stored_report.final_surface.q2_sites
         assert data["final_surface"]["q3_sites"] == self.stored_report.final_surface.q3_sites
         assert data["final_surface"]["q4_sites"] == self.stored_report.final_surface.q4_sites
@@ -1700,6 +1832,10 @@ class TestStoredSlitFormats:
         assert isinstance(context.prepared_result, sms.SlitPreparationResult)
         assert isinstance(context.prepared_result.report, sms.SlitPreparationReport)
         assert isinstance(
+            context.prepared_result.report.siloxane_bridge_geometry_diagnostics,
+            sms.SiloxaneBridgeGeometryDiagnostics,
+        )
+        assert isinstance(
             context.prepared_result.report.prepared_surface,
             sms.SiliconStateComposition,
         )
@@ -1730,6 +1866,8 @@ class TestStoredSlitFormats:
         assert hasattr(sms, "SilicaAngleTermSet")
         assert hasattr(sms, "SilicaTopologyModel")
         assert hasattr(sms, "SilaneTopologyConfig")
+        assert hasattr(sms, "SiloxaneBridgeBondFlag")
+        assert hasattr(sms, "SiloxaneBridgeGeometryDiagnostics")
         for primitive_name in (
             "Atom",
             "GraphBond",

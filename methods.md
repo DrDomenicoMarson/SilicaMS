@@ -99,6 +99,16 @@ zero. This tolerance absorbs binary64 roundoff at exact contact. Default
 ordering is deterministic. Setting `random_seed` randomizes chemically
 equivalent bridge and attachment choices reproducibly.
 
+After surface editing, the preparation report evaluates only the Si-O bonds
+created by newly inserted bridge oxygens. Their initial lengths use the same
+orthorhombic minimum-image convention. A bond is listed for attention when it
+is more than 20% longer than the framework Si-O equilibrium length in the
+resolved silica topology; the report records the atom identifiers, individual
+lengths and relative extensions, counts, threshold, and maximum length. This
+diagnostic is non-failing and does not modify or minimize the structure. It is
+therefore an initial-geometry screening result, not evidence of the relaxed
+force-field geometry.
+
 The physical slit geometry is fitted from the normal coordinates of the
 initial exposed surface-silicon sites. Sites are divided into two periodic face
 clusters, and each surface plane is the periodic mean of its cluster. The

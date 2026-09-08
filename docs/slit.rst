@@ -99,6 +99,13 @@ that remained practical in tests on the bundled TEPS series; dense exact
 targets can become very slow or unrealizable near ``0.90`` and above. The
 chosen settings are included in the preparation report.
 
+The report also contains non-failing
+``siloxane_bridge_geometry_diagnostics`` for only the Si--O bonds created by
+newly inserted bridge oxygens. It uses minimum-image distances and flags bonds
+more than 20% above the resolved framework Si--O equilibrium length, retaining
+the bridge-O and Si source identifiers for inspection. The diagnostic neither
+changes bridge placement nor minimizes or rejects the structure.
+
 These values are system-specific heuristics, not physical presets. Inspect
 the coordinates and perform a gentle unconstrained energy minimization before
 introducing constraints and proceeding to equilibration.
