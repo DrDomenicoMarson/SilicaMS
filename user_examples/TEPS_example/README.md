@@ -5,6 +5,11 @@ This directory was recovered in full from
 and thymol inputs, the original generated comparison campaigns, and the
 historical minimization files. The generated files are retained as reference
 artifacts and were not regenerated during the migration to SilicaMS.
+Their ITP files therefore retain the legacy `2.01600 Da` hydroxyl-hydrogen
+mass that was present when those inputs were generated. Current SilicaMS
+topology generation instead uses the conventional `1.00800 Da` hydrogen
+mass; the archived ITPs are not rewritten because they document the original
+simulation inputs.
 
 The two `_0_create_slit_alpha_*.py` scripts use the current `silicams` package.
 Both preserve their historical, explicitly supplied physical

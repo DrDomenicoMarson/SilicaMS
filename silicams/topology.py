@@ -12,6 +12,12 @@ from pathlib import Path
 import yaml
 
 
+_STANDARD_HYDROGEN_MASS_DA = "1.00800"
+_STANDARD_HYDROGEN_MASS_ORIGIN = (
+    "doi:10.1021/cm500365c; mass: ciaaw.org/abridged-atomic-weights"
+)
+
+
 @dataclass(frozen=True)
 class GromacsBondParameters:
     """Parameter payload for one GROMACS bond definition.
@@ -625,6 +631,10 @@ class FunctionalizedSlitChargeDiagnostics:
 def _build_default_silica_topology():
     """Build the package-default editable silica topology model.
 
+    Hydroxyl hydrogens use the conventional elemental hydrogen mass of
+    1.00800 Da. Intentional hydrogen-mass repartitioning belongs in the
+    downstream simulation setup and must conserve the total system mass.
+
     Returns
     -------
     model : SilicaTopologyModel
@@ -666,12 +676,12 @@ def _build_default_silica_topology():
             silanol_hydrogen=SilicaAtomTypeModel(
                 name="HG",
                 atomic_number=1,
-                mass="2.01600",
+                mass=_STANDARD_HYDROGEN_MASS_DA,
                 charge="0.000000",
                 particle_type="A",
                 sigma="0.1085",
                 epsilon="0.0627600",
-                origin="doi:10.1021/cm500365c",
+                origin=_STANDARD_HYDROGEN_MASS_ORIGIN,
             ),
         ),
         atom_assignments=SilicaAtomAssignmentSet(
@@ -702,8 +712,8 @@ def _build_default_silica_topology():
             silanol_hydrogen=SilicaAtomAssignment(
                 atom_type_name="HG",
                 charge="0.400000",
-                mass="2.01600",
-                origin="doi:10.1021/cm500365c",
+                mass=_STANDARD_HYDROGEN_MASS_DA,
+                origin=_STANDARD_HYDROGEN_MASS_ORIGIN,
             ),
             geminal_silicon=SilicaAtomAssignment(
                 atom_type_name="SI",
@@ -720,8 +730,8 @@ def _build_default_silica_topology():
             geminal_hydrogen=SilicaAtomAssignment(
                 atom_type_name="HG",
                 charge="0.400000",
-                mass="2.01600",
-                origin="doi:10.1021/cm500365c",
+                mass=_STANDARD_HYDROGEN_MASS_DA,
+                origin=_STANDARD_HYDROGEN_MASS_ORIGIN,
             ),
         ),
         bond_terms=SilicaBondTermSet(

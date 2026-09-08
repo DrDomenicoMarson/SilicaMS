@@ -83,6 +83,11 @@ sections are concatenated within that one molecule, allowing layouts such as
 separate proper and improper ``[ dihedrals ]`` blocks. Multiple molecule
 definitions and dangling interaction references are rejected before assembly.
 
+The default silica model assigns the conventional elemental mass of
+``1.00800 Da`` to silanol and geminal hydroxyl hydrogens. It does not apply
+hydrogen-mass repartitioning implicitly. Configure any repartitioning
+explicitly in the downstream simulation setup using a mass-conserving method.
+
 Contact settings and minimization
 ---------------------------------
 

@@ -117,6 +117,12 @@ blocks, are concatenated within that single molecule definition. Multiple
 molecule definitions and ambiguous or dangling indices are rejected before
 topology assembly.
 
+The default silica topology uses the conventional elemental hydrogen mass of
+`1.00800 Da` for silanol and geminal hydroxyl hydrogens. SilicaMS does not
+silently apply hydrogen-mass repartitioning. If a larger timestep requires
+repartitioning, configure it explicitly in the downstream simulation workflow
+with a mass-conserving method.
+
 ### Construction contact policy
 
 The contact defaults are deliberately permissive construction heuristics.
@@ -278,7 +284,10 @@ The `examples/` directory contains minimal bare, functionalized, and filling
 workflows. The larger `user_examples/TEPS_example/` directory preserves the
 complete historical TEPS study inputs and generated comparison campaigns from
 `PoreMS/PoreMS@038b034238d0609e0e0f660d5866089e5d3701c8`; its construction and
-filling scripts have been migrated to the current SilicaMS interfaces.
+filling scripts have been migrated to the current SilicaMS interfaces. The
+archived generated ITP files retain the legacy `2.01600 Da` hydroxyl-hydrogen
+mass because changing recorded simulation inputs would falsify their
+provenance; newly generated topologies use `1.00800 Da`.
 
 ## Origin and attribution
 

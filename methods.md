@@ -138,6 +138,17 @@ against the declared `[ atoms ]` indices before assembly. Repeated interaction
 sections remain supported within the single molecule definition, while a
 second molecule definition is rejected rather than merged implicitly.
 
+### Atomic-mass convention
+
+Generated silica topologies use `1.00800 Da` for ordinary silanol and geminal
+hydroxyl hydrogens. This is the conventional elemental hydrogen mass, not a
+hydrogen-mass-repartitioned model. SilicaMS does not increase hydrogen masses
+implicitly: any repartitioning used to enable a larger integration timestep
+must be selected explicitly during simulation setup and must transfer the
+added hydrogen mass from its bonded heavy atom so that total mass is conserved.
+The force-field interaction parameters remain those recorded in the resolved
+`SilicaTopologyModel`.
+
 ## Export and validation
 
 Finalization is idempotent. One immutable export snapshot defines atom and

@@ -171,8 +171,8 @@ def itp_atom_rows(itp_path):
 
     Returns
     -------
-    rows : list[tuple[str, str, str, float]]
-        Parsed rows as ``(atom_type, residue_name, atom_name, charge)``.
+    rows : list[tuple[str, str, str, float, str | None]]
+        Parsed rows as ``(atom_type, residue_name, atom_name, charge, mass)``.
     """
     rows = []
     section = None
@@ -187,7 +187,10 @@ def itp_atom_rows(itp_path):
             if section == "atoms":
                 fields = stripped.split()
                 if len(fields) >= 7:
-                    rows.append((fields[1], fields[3], fields[4], float(fields[6])))
+                    mass = fields[7] if len(fields) >= 8 else None
+                    rows.append(
+                        (fields[1], fields[3], fields[4], float(fields[6]), mass)
+                    )
     return rows
 
 
@@ -710,6 +713,10 @@ class TestAmorphousSlitPreparation:
         assert model_b.angle_terms.graft_oxygen_mount_oxygen.origin == "doi:10.1021/cm500365c"
         assert model_b.angle_terms.graft_scaffold_si_scaffold_o_mount.angle_deg == pytest.approx(149.0)
         assert model_b.angle_terms.graft_oxygen_mount_oxygen.angle_deg == pytest.approx(109.5)
+        assert model_b.atomtypes.silanol_hydrogen.mass == "1.00800"
+        assert model_b.atom_assignments.silanol_hydrogen.mass == "1.00800"
+        assert model_b.atom_assignments.geminal_hydrogen.mass == "1.00800"
+        assert "ciaaw.org" in model_b.atomtypes.silanol_hydrogen.origin
 
     def test_silica_topology_serialization_helpers_return_readable_structures(self):
         model = sms.default_silica_topology()
@@ -1243,9 +1250,21 @@ class TestStoredAmorphousSlit:
         atom_rows = itp_atom_rows(
             os.path.join(self.output_dir, "test_bare_amorphous_slit.itp")
         )
+        hydroxyl_rows = [
+            row
+            for row in atom_rows
+            if row[0] == "HG" and row[1] in {"SL", "SLG"}
+        ]
+        assert "HG 1 1.00800 0.000000 A" in itp_text
+        assert hydroxyl_rows
+        assert {row[4] for row in hydroxyl_rows} == {"1.00800"}
         total_charge = sum(row[3] for row in atom_rows)
         residue_counts = {
-            residue_name: sum(1 for _atom_type, residue, _atom_name, _charge in atom_rows if residue == residue_name)
+            residue_name: sum(
+                1
+                for _atom_type, residue, _atom_name, _charge, _mass in atom_rows
+                if residue == residue_name
+            )
             for residue_name in {"OM", "SI", "SL", "SLG"}
         }
 
@@ -1363,6 +1382,18 @@ class TestStoredAmorphousSlit:
         )
 
         assert report.is_valid
+
+    def test_helper_topology_uses_standard_hydrogen_mass(self, tmp_path):
+        """Keep helper topology output aligned with the default silica model."""
+
+        snapshot = self.stored_result.system.export_snapshot()
+        sms.GromacsTopologyWriter(snapshot, tmp_path).write_helper_topology(
+            "helper.top"
+        )
+
+        helper_text = (tmp_path / "helper.top").read_text(encoding="utf-8")
+        assert "HG       1   1.00800" in helper_text
+        assert "2.01600" not in helper_text
 
 @pytest.mark.xdist_group("small_bare")
 class TestStoredSlitFormats:
@@ -2277,6 +2308,15 @@ class TestFunctionalizedAmorphousSlit:
         assert "[ atomtypes ]" in itp_text
         assert "[ dihedrals ]" in itp_text
         assert "si 14 28.08600" in itp_text
+        atom_rows = itp_atom_rows(output_dir / f"{name}.itp")
+        hydroxyl_rows = [
+            row
+            for row in atom_rows
+            if row[0] == "HG" and row[1] in {"SL", "SLG"}
+        ]
+        assert "HG 1 1.00800 0.000000 A" in itp_text
+        assert hydroxyl_rows
+        assert {row[4] for row in hydroxyl_rows} == {"1.00800"}
         assert "117.65432 432.123456" in itp_text
         assert "12.34567 0.98765 2" in itp_text
         assert "OM O1" not in top_text
@@ -2288,7 +2328,7 @@ class TestFunctionalizedAmorphousSlit:
         assert result.charge_diagnostics.t2_site_count == 3
         assert result.charge_diagnostics.t3_site_count == 4
         assert result.charge_diagnostics.final_total_charge == pytest.approx(0.0, abs=1e-6)
-        assert sum(row[3] for row in itp_atom_rows(output_dir / f"{name}.itp")) == pytest.approx(
+        assert sum(row[3] for row in atom_rows) == pytest.approx(
             0.0,
             abs=1e-6,
         )
