@@ -80,6 +80,114 @@ def test_fill_paths_must_be_distinct() -> None:
         slit_fill_mod._resolve_fill_config(config)
 
 
+@pytest.mark.parametrize("source_field", ("guest_path", "slit_path", "slit_geometry_path", "slit_topology_path"))
+@pytest.mark.parametrize("alias_kind", ("direct", "lexical", "symlink", "hardlink"))
+def test_fill_protects_input_aliases_before_reading(tmp_path, source_field, alias_kind):
+    """Reject report/input collisions before parsing or changing scientific files."""
+    source = tmp_path / "source.gro"
+    source.write_bytes(b"scientific input sentinel")
+    alias = tmp_path / "alias.log"
+    if alias_kind == "direct":
+        alias = source
+    elif alias_kind == "lexical":
+        (tmp_path / "sub").mkdir()
+        alias = tmp_path / "sub" / ".." / source.name
+    elif alias_kind == "symlink":
+        alias.symlink_to(source)
+    else:
+        alias.hardlink_to(source)
+    config = slit_fill_mod.SlitFillConfig(
+        **{source_field: source}, output_path=tmp_path / "filled.gro", log_path=alias,
+    )
+    with pytest.raises(ValueError, match="must differ from input"):
+        slit_fill_mod.fill_slit(config)
+    assert source.read_bytes() == b"scientific input sentinel"
+    assert not config.output_path.exists()
+
+
+@pytest.mark.parametrize("alias_kind", ("lexical", "symlink", "hardlink"))
+def test_fill_rejects_aliased_output_destinations(tmp_path, alias_kind):
+    """Do not promote report text over the GRO through another spelling of its path."""
+    output = tmp_path / "filled.gro"
+    output.write_bytes(b"previous output")
+    alias = tmp_path / "alias.log"
+    if alias_kind == "lexical":
+        (tmp_path / "sub").mkdir()
+        alias = tmp_path / "sub" / ".." / output.name
+    elif alias_kind == "symlink":
+        alias.symlink_to(output)
+    else:
+        alias.hardlink_to(output)
+    with pytest.raises(ValueError, match="must be distinct"):
+        slit_fill_mod.fill_slit(slit_fill_mod.SlitFillConfig(
+            output_path=output, log_path=alias,
+        ))
+    assert output.read_bytes() == b"previous output"
+
+
+@pytest.mark.parametrize("normal_axis", (0, 1, 2))
+def test_filling_preserves_guest_chirality(tmp_path, write_gro, normal_axis):
+    """Preserve the signed molecular volume through filtering and GRO export."""
+    slit, guest, output = (tmp_path / name for name in ("slit.gro", "guest.gro", "out.gro"))
+    positions = np.ones((5, 3)) + np.array([
+        [0, 0, 0], [.08, .08, .08], [.08, -.08, -.08],
+        [-.08, .08, -.08], [-.08, -.08, .08],
+    ])
+    write_gro(slit, [(1, "SI", "Si", 1, .1, .1, .1)], (2., 2., 2.))
+    write_gro(guest, [
+        (1, "GST", name, i + 1, *position)
+        for i, (name, position) in enumerate(zip(("C", "F", "O", "N", "H"), positions))
+    ], (2., 2., 2.))
+    slit_fill_mod.fill_slit(slit_fill_mod.SlitFillConfig(
+        slit_path=slit, guest_path=guest, output_path=output, target_resname="GST",
+        slit_geometry=PeriodicSlitGeometry((2., 2., 2.), normal_axis, .2, 1.8),
+        density_sample_count=10, density_seed_count=1,
+        density_probe_radii_nm=(0.,), random_seed=7,
+    ))
+    actual = gro_io_mod._load_gro_system(output).coordinates[1:]
+    assert np.linalg.det(actual[1:4] - actual[0]) == pytest.approx(
+        np.linalg.det(positions[1:4] - positions[0]), abs=1e-12,
+    )
+
+
+@pytest.mark.parametrize("explicit_topology", (False, True))
+@pytest.mark.parametrize("periodic_crossing", (False, True))
+def test_filling_rejects_ring_pierced_by_framework_junction(
+    tmp_path, write_gro, explicit_topology, periodic_crossing,
+):
+    """Screen separate SI/OM residues across PBC, including stretched ITP bonds."""
+    slit, guest, output = (tmp_path / name for name in ("slit.gro", "guest.gro", "out.gro"))
+    center_z = 0.0 if periodic_crossing else 1.0
+    half_length = .16 if explicit_topology else .08
+    endpoints_z = np.mod([center_z - half_length, center_z + half_length], 2.)
+    write_gro(slit, [
+        (1, "SI", "Si", 1, 1., 1., endpoints_z[0]),
+        (2, "OM", "O", 2, 1., 1., endpoints_z[1]),
+    ], (2., 2., 2.))
+    write_gro(guest, [
+        (1, "GST", f"CA{k+1}", k+1,
+         1. + .14 * np.cos(k * np.pi / 3), 1. + .14 * np.sin(k * np.pi / 3), center_z)
+        for k in range(6)
+    ], (2., 2., 2.))
+    topology = tmp_path / "slit.itp"
+    topology.write_text(
+        "[ moleculetype ]\nSIL 3\n[ atoms ]\n"
+        "1 SI 1 SI Si 1 0.0 28.0\n2 OM 2 OM O 2 0.0 16.0\n"
+        "[ bonds ]\n1 2 1 .165 1000\n"
+    )
+    geometry = PeriodicSlitGeometry((2., 2., 2.), 2, 1.5, .5) if periodic_crossing else PeriodicSlitGeometry((2., 2., 2.), 2, .2, 1.8)
+    report = slit_fill_mod.fill_slit(slit_fill_mod.SlitFillConfig(
+        slit_path=slit, guest_path=guest, output_path=output,
+        slit_topology_path=topology if explicit_topology else None,
+        slit_geometry=geometry, target_resname="GST",
+        density_sample_count=10, density_seed_count=1, density_probe_radii_nm=(0.,), random_seed=1,
+    ))
+    assert report.removed_by_general_cutoff_guest_molecules == 0
+    assert report.slit_bond_count_checked == 1
+    assert report.removed_by_reverse_ring_guest_molecules == 1
+    assert report.remaining_guest_molecules == 0
+
+
 def test_infer_slit_geometry_detects_x_axis(module_workspace, write_basic_slit) -> None:
     """Hydroxylated surface Si atoms should define the slit-normal axis."""
 
@@ -274,7 +382,7 @@ def test_fill_slit_keeps_positions_and_velocities_in_the_same_output_frame(
         )
     )
 
-    permutation = ((2, 1, 0), (0, 2, 1), (0, 1, 2))[normal_axis]
+    permutation = ((1, 2, 0), (2, 0, 1), (0, 1, 2))[normal_axis]
     kept_guest_indices = [0, 1, 3]
     expected_guest_coordinates = (guest_coordinates[kept_guest_indices] - 1.0).copy()
     if wrap_output:

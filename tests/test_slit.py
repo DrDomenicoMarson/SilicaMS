@@ -1,4 +1,5 @@
 from dataclasses import dataclass, replace
+from collections import Counter
 import importlib.util
 import inspect
 import json
@@ -2472,6 +2473,74 @@ class TestFunctionalizedAmorphousSlit:
         )
         assert result.report.timing_summary.finalize_s > 0
         assert result.report.timing_summary.export_s > 0
+
+    def test_full_topology_preserves_additive_and_supplementary_ligand_terms(
+        self, tmp_path, functionalized_slit_context,
+    ):
+        """Export every supplied potential, including terms outside chemical edges."""
+        config = explicit_tms_topology_config(tmp_path)
+        path = Path(config.itp_path)
+        path.write_text(path.read_text() + (
+            "\n[ bonds ]\n1 2 6 .165 1000\n1 4 6 .4 1234\n"
+            "[ angles ]\n1 2 3 1 120 321\n1 4 7 1 115 432\n"
+        ))
+        source = topo_mod.parse_flat_itp(path)
+        writer = sms.GromacsTopologyWriter(
+            functionalized_slit_context.finalized_result.system.export_snapshot(), tmp_path,
+        )
+        diagnostics = writer.write_full_slit(
+            name="additive", base_ligand_short="TMS", silane_topology_config=config,
+        )
+        rows = topo_mod._read_section_rows(tmp_path / "additive.itp").rows_by_section
+        atoms = {atom.index: atom for atom in topo_mod._parse_atoms(path, rows["atoms"])}
+        bonds = topo_mod._parse_bonds(path, rows["bonds"])
+        angles = topo_mod._parse_angles(path, rows["angles"])
+        residue_ids = {atom.residue_number for atom in atoms.values() if atom.residue_name == "TMS"}
+        expected_bonds = Counter(
+            (source.atom_by_index[b.atom_a].atom_name, source.atom_by_index[b.atom_b].atom_name, b.parameters)
+            for b in source.moleculetype.bonds
+        )
+        expected_angles = Counter(
+            (source.atom_by_index[a.atom_a].atom_name, source.atom_by_index[a.atom_b].atom_name,
+             source.atom_by_index[a.atom_c].atom_name, a.parameters)
+            for a in source.moleculetype.angles
+        )
+        assert len(residue_ids) == 4
+        for residue_id in residue_ids:
+            assert Counter(
+                (atoms[b.atom_a].atom_name, atoms[b.atom_b].atom_name, b.parameters)
+                for b in bonds if atoms[b.atom_a].residue_number == atoms[b.atom_b].residue_number == residue_id
+            ) == expected_bonds
+            assert Counter(
+                (atoms[a.atom_a].atom_name, atoms[a.atom_b].atom_name, atoms[a.atom_c].atom_name, a.parameters)
+                for a in angles
+                if atoms[a.atom_a].residue_number == atoms[a.atom_b].residue_number == atoms[a.atom_c].residue_number == residue_id
+            ) == expected_angles
+        assert diagnostics.is_valid
+
+    @pytest.mark.parametrize("extra_bond", (False, True))
+    def test_full_topology_rejects_inconsistent_ligand_chemical_graph(
+        self, tmp_path, functionalized_slit_context, extra_bond,
+    ):
+        """Fail before output promotion when chemical edges differ from coordinates."""
+        config = explicit_tms_topology_config(tmp_path)
+        path = Path(config.itp_path)
+        source = topo_mod.parse_flat_itp(path)
+        bonds = source.moleculetype.bonds
+        if extra_bond:
+            bonds += (topo_mod.GromacsBond(1, 4, topo_mod.GromacsBondParameters.harmonic(.4, 1000)),)
+        else:
+            index = next(i for i, bond in enumerate(bonds) if 1 not in (bond.atom_a, bond.atom_b))
+            bonds = bonds[:index] + (replace(bonds[index], parameters=topo_mod.GromacsBondParameters(6, (".165", "1000"))),) + bonds[index + 1:]
+        path.write_text(topo_mod.render_itp(source.atomtypes, replace(source.moleculetype, bonds=bonds)))
+        output = tmp_path / "mismatch.itp"
+        output.write_text("prior output")
+        with pytest.raises(ValueError, match="chemical bonds disagree"):
+            sms.GromacsTopologyWriter(
+                functionalized_slit_context.finalized_result.system.export_snapshot(), tmp_path,
+            ).write_full_slit(name="mismatch", base_ligand_short="TMS", silane_topology_config=config)
+        assert output.read_text() == "prior output"
+        assert not (tmp_path / "mismatch.top").exists()
 
     def test_explicit_silica_topology_override_changes_functionalized_junction_angles(
         self,

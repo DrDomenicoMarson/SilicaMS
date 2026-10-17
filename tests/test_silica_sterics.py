@@ -203,9 +203,10 @@ def test_grid_defaults_derived_dimensions_and_mapping_ownership():
     assert grid.cells == grid.block_cells == {}
     assert grid.cells is not other.cells
     assert grid.block_cells is not other.block_cells
-    assert [field.name for field in fields(grid)] == [
+    assert [field.name for field in fields(grid) if field.init] == [
         "box", "cell_size_nm", "cells", "block_cells",
     ]
+    assert grid.maximum_radius_nm == 0.0
     assert _StericGrid((1.125, 0.875, 0.125), cell_size_nm=0.5).dims == (2, 1, 1)
     cells = {(0, 0, 0): _StericAtomBatch.empty()}
     block_cells = {}
@@ -309,7 +310,7 @@ def test_grid_empty_operations_and_missing_cell_removal():
     grid.block_cells[7] = (0, 0, 0)
     grid.remove_block_atoms([7, 99])
     assert grid.cells == grid.block_cells == {}
-    _assert_batch(grid.neighbor_batch([0, 0, 0]), [], [], [])
+    _assert_batch(grid.neighbor_batch([0, 0, 0], .25), [], [], [])
 
 
 def test_grid_batch_addition_retains_existing_shortest_input_iteration():
@@ -345,7 +346,7 @@ def test_neighbor_membership_order_and_uniqueness_against_independent_cells(
         grid.add_block_atoms(ids, [position, position], [0.125, 0.25])
         expected_rows[key] = (position, ids)
     query = np.array(center) * 0.25 + 0.0625
-    result = grid.neighbor_batch(query)
+    result = grid.neighbor_batch(query, .25)
     # Per-axis cell orders are specified above independently of grid traversal.
     expected_keys = list(product(*axis_order))
     expected_ids = [atom_id for key in expected_keys for atom_id in expected_rows[key][1]]
@@ -359,7 +360,7 @@ def test_neighbor_membership_order_and_uniqueness_against_independent_cells(
                for k, c, size in zip(key, center, grid.dims))
     }
     assert set(expected_keys) == member_keys
-    shifted = grid.neighbor_batch(query + np.asarray(box) * [2, -1, 3])
+    shifted = grid.neighbor_batch(query + np.asarray(box) * [2, -1, 3], .25)
     np.testing.assert_array_equal(shifted.block_atom_ids, result.block_atom_ids)
     for cell in grid.cells.values():
         assert not np.shares_memory(result.positions, cell.positions)
@@ -367,10 +368,20 @@ def test_neighbor_membership_order_and_uniqueness_against_independent_cells(
         assert not np.shares_memory(result.block_atom_ids, cell.block_atom_ids)
 
 
-def test_neighbor_query_skips_empty_and_distant_cells_without_radius_filtering():
-    """Include all rows in local cells but never expand the fixed neighborhood."""
+def test_neighbor_query_expands_to_requested_radius_without_duplicate_cells():
+    """Include distant cells when requested and cap searches spanning many boxes."""
     grid = _StericGrid((1, 1, 1))
     grid.cells[(0, 0, 0)] = _StericAtomBatch.empty()
     grid.add_block_atom(7, [0.875, 0.875, 0.875], 0.0)
     grid.add_block_atom(9, [0.625, 0.625, 0.625], 100.0)
-    _assert_batch(grid.neighbor_batch([0, 0, 0]), [[0.875, 0.875, 0.875]], [0.0], [7])
+    _assert_batch(grid.neighbor_batch([0, 0, 0], .25), [[0.875, 0.875, 0.875]], [0.0], [7])
+    for radius in (.5, 100.):
+        batch = grid.neighbor_batch([0, 0, 0], radius)
+        assert sorted(batch.block_atom_ids) == [7, 9]
+
+
+@pytest.mark.parametrize("radius", (-1., np.nan, np.inf))
+def test_neighbor_query_rejects_invalid_radius(radius):
+    """Reject invalid search domains instead of silently omitting candidate cells."""
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        _StericGrid((1, 1, 1)).neighbor_batch([0, 0, 0], radius)

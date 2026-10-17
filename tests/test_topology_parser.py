@@ -201,3 +201,16 @@ def test_flat_itp_accepts_repeated_interaction_sections_for_one_molecule(
 
     assert len(bundle.moleculetype.dihedrals) == 2
     assert bundle.atom_by_name("C4") is bundle.atom_by_index[4]
+
+
+def test_plural_lookups_preserve_additive_bonds_and_angles(tmp_path):
+    """Retain all potentials on an atom tuple, independent of endpoint ordering."""
+    path = _write_itp(tmp_path / "additive.itp", _single_molecule_itp(
+        "[ bonds ]\n1 2 1 .15 1000\n2 1 6 .16 2000\n"
+        "[ angles ]\n1 2 3 1 110 100\n3 2 1 1 120 200\n"
+    ))
+    bundle = topology_mod.parse_flat_itp(path)
+    assert bundle.bonds_by_names("C2", "C1") == bundle.moleculetype.bonds
+    assert bundle.angles_by_names("C3", "C2", "C1") == bundle.moleculetype.angles
+    assert bundle.bonds_by_names("C1", "C4") == ()
+    assert bundle.angles_by_names("C1", "C3", "C4") == ()

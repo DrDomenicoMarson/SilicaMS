@@ -252,9 +252,10 @@ class _RingCheckCache:
     guest_ring_geometries : tuple[_RingGeometry, ...]
         Rings from selected guest residues, in source order.
     slit_bond_templates : tuple[_ResidueBondTemplate, ...]
-        Slit templates in first-seen cache-key order.
+        Slit templates in first-seen cache-key order, empty for explicit topology.
     slit_bond_geometries : tuple[_BondSegmentGeometry, ...]
-        Slit bond segments in residue and template bond order.
+        Slit segments in explicit index order, or inferred intra-residue
+        template order followed by sorted inter-residue pairs.
 
     Notes
     -----
@@ -746,8 +747,9 @@ def _build_slit_bond_geometries(
     slit_system: _GroSystem,
     slit_coordinates: FloatArray,
     final_box_lengths: FloatArray,
+    explicit_bonds: tuple[tuple[int, int], ...] | None = None,
 ) -> tuple[tuple[_ResidueBondTemplate, ...], tuple[_BondSegmentGeometry, ...]]:
-    """Build slit bond templates and periodic bond-segment geometry.
+    """Build periodic slit bonds within residues and across framework junctions.
 
     Parameters
     ----------
@@ -757,19 +759,26 @@ def _build_slit_bond_geometries(
         Slit positions, shape ``(N_slit, 3)``, in nanometers.
     final_box_lengths : ndarray
         Orthorhombic box lengths, shape ``(3,)``, in nanometers.
+    explicit_bonds : tuple[tuple[int, int], ...] or None, optional
+        Validated zero-based chemical bond indices from the full slit topology.
+        When supplied, use only these bonds and return no inferred templates.
 
     Returns
     -------
     tuple[tuple[_ResidueBondTemplate, ...], tuple[_BondSegmentGeometry, ...]]
-        Templates in first-seen key order and bond segments in residue/template
-        order.
+        Inferred templates in first-seen key order and segments in intra-residue
+        template order followed by sorted inter-residue pairs. Explicit input
+        instead yields no templates and segments in the supplied bond order.
 
     Notes
     -----
     Each residue is unwrapped relative to its first atom. Connectivity comes
     from the first residue-name/atom-name signature occurrence. Hydrogen
     endpoints are always included here, independently of the guest forward-check
-    option. Empty bond templates are retained.
+    option. Empty bond templates are retained. Additional inter-residue bonds
+    use periodic distances with ``0.05 < distance <= 1.25 * (r_a + r_b)`` nm.
+    Inference cannot recover arbitrary stretched bonds; supply explicit
+    connectivity for unminimized structures.
 
     Raises
     ------
@@ -779,6 +788,12 @@ def _build_slit_bond_geometries(
 
     template_cache: dict[tuple[str, tuple[str, ...]], _ResidueBondTemplate] = {}
     bond_geometries: list[_BondSegmentGeometry] = []
+
+    if explicit_bonds is not None:
+        return (), tuple(
+            _slit_bond_segment(slit_system, slit_coordinates, final_box_lengths, a, b)
+            for a, b in explicit_bonds
+        )
 
     for residue_index, residue_span in enumerate(slit_system.residue_spans):
         atom_names = tuple(
@@ -825,7 +840,70 @@ def _build_slit_bond_geometries(
                 )
             )
 
+    # Native silica places framework atoms in separate residues. Include their
+    # periodic Si--O and graft-junction edges in the reverse ring screen.
+    if len(slit_coordinates) > 1:
+        radii = np.array([
+            db.get_covalent_radius(_infer_element_from_atom_name(name))
+            for name in slit_system.atom_names
+        ])
+        tree = cKDTree(
+            wrap_positions(slit_coordinates, final_box_lengths), boxsize=final_box_lengths,
+        )
+        pairs = tree.query_pairs(2.5 * float(np.max(radii)), output_type="ndarray")
+        if len(pairs):
+            a, b = pairs.T
+            delta = minimum_image_displacements(
+                slit_coordinates[a], slit_coordinates[b], final_box_lengths,
+            )
+            distances = np.linalg.norm(delta, axis=1)
+            selected = (
+                (slit_system.atom_to_residue_index[a] != slit_system.atom_to_residue_index[b])
+                & (distances > 0.05)
+                & (distances <= 1.25 * (radii[a] + radii[b]))
+            )
+            for atom_a, atom_b in sorted(map(tuple, pairs[selected].tolist())):
+                bond_geometries.append(_slit_bond_segment(
+                    slit_system, slit_coordinates, final_box_lengths, atom_a, atom_b,
+                ))
+
     return tuple(template_cache.values()), tuple(bond_geometries)
+
+
+def _slit_bond_segment(
+    system: _GroSystem, coordinates: FloatArray, box: FloatArray,
+    atom_a: int, atom_b: int,
+) -> _BondSegmentGeometry:
+    """Construct a minimum-image framework segment from global atom indices.
+
+    Parameters
+    ----------
+    system : _GroSystem
+        Atom names and residue membership of the slit.
+    coordinates : ndarray
+        Slit coordinates in nm, shape ``(N, 3)``.
+    box : ndarray
+        Orthorhombic box lengths in nm.
+    atom_a, atom_b : int
+        Zero-based endpoint indices, validated by the caller.
+
+    Returns
+    -------
+    _BondSegmentGeometry
+        Bond in a consistent periodic image, assigned to its first residue.
+    """
+    start = coordinates[atom_a]
+    stop = start + minimum_image_displacements(start, coordinates[atom_b], box)
+    midpoint = .5 * (start + stop)
+    residue_index = int(system.atom_to_residue_index[atom_a])
+    return _BondSegmentGeometry(
+        residue_index=residue_index,
+        residue_name=system.residue_spans[residue_index].residue_name,
+        start_atom_name=system.atom_names[atom_a], stop_atom_name=system.atom_names[atom_b],
+        start_point=start, stop_point=stop, midpoint=midpoint,
+        wrapped_midpoint=wrap_positions(midpoint, box),
+        half_length_nm=.5 * float(np.linalg.norm(stop - start)),
+    )
 
 
 def _point_inside_polygon_with_padding(
@@ -1083,6 +1161,7 @@ def _identify_clashing_guest_residues(
     ring_plane_tolerance_nm: float,
     ring_polygon_padding_nm: float,
     include_hydrogen_bonds_in_ring_check: bool,
+    slit_bonds: tuple[tuple[int, int], ...] | None = None,
 ) -> tuple[_ClashSelection, _RingCheckCache]:
     """Independently classify all selected guests by general and ring clashes.
 
@@ -1114,6 +1193,9 @@ def _identify_clashing_guest_residues(
     include_hydrogen_bonds_in_ring_check : bool
         Whether inferred guest bonds with hydrogen endpoints participate in
         forward ring checks; slit bonds always include them.
+    slit_bonds : tuple[tuple[int, int], ...] or None, optional
+        Validated full-slit chemical bonds in zero-based GRO order. When absent,
+        infer periodic bonds within and between framework residues.
 
     Returns
     -------
@@ -1188,6 +1270,7 @@ def _identify_clashing_guest_residues(
         slit_system=slit_system,
         slit_coordinates=slit_coordinates,
         final_box_lengths=final_box_lengths,
+        explicit_bonds=slit_bonds,
     )
     ring_check_cache = _RingCheckCache(
         slit_ring_geometries=slit_ring_geometries,

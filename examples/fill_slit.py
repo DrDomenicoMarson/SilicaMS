@@ -8,7 +8,7 @@ import silicams as sms
 
 
 def main(argv: Sequence[str] | None = None) -> sms.SlitFillReport:
-    """Fill one slit using explicit guest, slit, and output paths.
+    """Fill one slit with explicit paths and optional exact ITP connectivity.
 
     Parameters
     ----------
@@ -25,6 +25,10 @@ def main(argv: Sequence[str] | None = None) -> sms.SlitFillReport:
     parser.add_argument("guest", type=Path, help="Guest-reservoir GRO file")
     parser.add_argument("slit", type=Path, help="Generated silica-slit GRO file")
     parser.add_argument("output", type=Path, help="Filled output GRO file")
+    parser.add_argument(
+        "--slit-topology", type=Path, default=None,
+        help="Flat full-slit ITP matching the GRO; recommended for stretched bonds",
+    )
     parser.add_argument(
         "--slit-geometry",
         type=Path,
@@ -43,6 +47,7 @@ def main(argv: Sequence[str] | None = None) -> sms.SlitFillReport:
             slit_path=args.slit,
             output_path=args.output,
             slit_geometry_path=args.slit_geometry,
+            slit_topology_path=args.slit_topology,
             target_resname=args.resname,
         )
     )

@@ -9,6 +9,54 @@ import tempfile
 from typing import Iterator, Sequence
 
 
+def paths_refer_to_same_file(first_path: Path, second_path: Path) -> bool:
+    """Compare prospective paths, resolving aliases and existing hard links.
+
+    Parameters
+    ----------
+    first_path, second_path : Path
+        File paths to compare, including paths that do not yet exist.
+
+    Returns
+    -------
+    bool
+        Whether canonical resolution or existing file identity matches.
+    """
+    if first_path.resolve(strict=False) == second_path.resolve(strict=False):
+        return True
+    try:
+        return first_path.samefile(second_path)
+    except OSError:
+        return False
+
+
+def validate_output_paths(
+    output_paths: Sequence[Path], input_paths: Sequence[Path] = (),
+) -> None:
+    """Reject aliased outputs and collisions with protected scientific inputs.
+
+    Parameters
+    ----------
+    output_paths : sequence[Path]
+        Destinations that must identify distinct files.
+    input_paths : sequence[Path], optional
+        Inputs that must never be replaced by any output.
+
+    Raises
+    ------
+    ValueError
+        If outputs alias one another or any input, through canonical paths,
+        symbolic links, or existing hard links.
+    """
+    for index, output in enumerate(output_paths):
+        for other in output_paths[:index]:
+            if paths_refer_to_same_file(output, other):
+                raise ValueError(f"Output paths must be distinct: {output} and {other}.")
+        for source in input_paths:
+            if paths_refer_to_same_file(output, source):
+                raise ValueError(f"Output path {output} must differ from input path {source}.")
+
+
 def _remove_if_present(path: Path) -> None:
     """Remove one regular staging file when it exists.
 
@@ -37,7 +85,8 @@ def commit_staged_files(staged_to_final: Sequence[tuple[Path, Path]]) -> None:
     FileNotFoundError
         Raised when any staged output is missing.
     ValueError
-        Raised when final destinations are duplicated.
+        Raised when final destinations alias one another, including through
+        symbolic links or existing hard links.
     OSError
         Raised when backup, promotion, or rollback fails.
 
@@ -50,8 +99,7 @@ def commit_staged_files(staged_to_final: Sequence[tuple[Path, Path]]) -> None:
 
     pairs = tuple((Path(staged), Path(final)) for staged, final in staged_to_final)
     final_paths = tuple(final for _, final in pairs)
-    if len(final_paths) != len(set(final_paths)):
-        raise ValueError("Transactional output destinations must be unique.")
+    validate_output_paths(final_paths)
     missing = [staged for staged, _ in pairs if not staged.is_file()]
     if missing:
         raise FileNotFoundError(f"Missing staged output files: {missing!r}")
@@ -111,11 +159,16 @@ def staged_output_paths(final_paths: Sequence[Path]) -> Iterator[dict[Path, Path
     ------
     staging_paths : dict[Path, Path]
         Mapping from each normalized final path to its writable staging path.
+
+    Raises
+    ------
+    ValueError
+        If destinations alias one another. Validation precedes directory or
+        staging-file creation.
     """
 
     normalized_finals = tuple(Path(path) for path in final_paths)
-    if len(normalized_finals) != len(set(normalized_finals)):
-        raise ValueError("Transactional output destinations must be unique.")
+    validate_output_paths(normalized_finals)
 
     staging_paths: dict[Path, Path] = {}
     created_directories: list[Path] = []

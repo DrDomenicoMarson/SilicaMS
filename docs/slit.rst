@@ -83,6 +83,12 @@ sections are concatenated within that one molecule, allowing layouts such as
 separate proper and improper ``[ dihedrals ]`` blocks. Multiple molecule
 definitions and dangling interaction references are rejected before assembly.
 
+Full export retains every supplied ligand bond and angle term, including
+multiple potentials on the same atoms and supplementary distance interactions.
+Chemical bonds must match the ligand graph in the shared coordinate snapshot;
+mismatches fail before output promotion. ``ParsedTopologyBundle.bonds_by_names``
+and ``angles_by_names`` return tuples of all matching rows in source order.
+
 The default silica model assigns the conventional elemental mass of
 ``1.00800 Da`` to silanol and geminal hydroxyl hydrogens. It does not apply
 hydrogen-mass repartitioning implicitly. Configure any repartitioning
@@ -98,6 +104,10 @@ default. ``0.75`` and ``0.85`` are progressively stricter continuous values
 that remained practical in tests on the bundled TEPS series; dense exact
 targets can become very slow or unrealizable near ``0.90`` and above. The
 chosen settings are included in the preparation report.
+
+The periodic steric grid expands its search using the selected clearance scale
+and participating atom radii, so cutoffs larger than the nominal cell width
+still include every potentially overlapping atom.
 
 The report also contains non-failing
 ``siloxane_bridge_geometry_diagnostics`` for only the Si--O bonds created by
@@ -116,6 +126,10 @@ Writers and object output
 High-level write functions finalize once and pass one immutable snapshot to
 the structure and topology writers. Object serialization is opt-in through
 ``write_object_files=True`` and supports SilicaMS objects only.
+
+GRO uses the shared atom records, so its atom and residue order agrees with
+PDB, mmCIF, and topology output even when source residue labels start above
+zero or recur. Its five-digit atom/residue identifiers wrap modulo 100000.
 
 GRO, PDB, and mmCIF connectivity validation defaults to ``strict``. Invalid
 assembled chemistry prevents output unless ``warn`` or ``off`` is selected

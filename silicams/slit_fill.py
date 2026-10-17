@@ -21,7 +21,8 @@ from silicams._gro_io import (
     _load_gro_system,
     _write_merged_gro,
 )
-from silicams._output_transaction import staged_output_paths
+from silicams._output_transaction import staged_output_paths, validate_output_paths
+from silicams._slit_bond_io import load_slit_bonds
 from silicams._slit_geometry_io import (
     _resolve_slit_geometry,
     _write_slit_geometry_metadata,
@@ -72,12 +73,18 @@ class SlitFillConfig:
         GRO file containing the larger guest reservoir box.
     slit_path : Path, optional
         GRO file containing the grafted silica slit.
+    slit_topology_path : Path or None, optional
+        Explicit flat full-slit ITP matching the GRO atom order. Chemical bonds
+        from this file drive ring screening, including stretched and inter-residue
+        bonds. When omitted, covalent-distance inference is used within and
+        between slit residues; no neighboring topology is discovered.
     output_path : Path, optional
         GRO path written after filtering and merging the guest molecules into
         the slit cell.
     log_path : Path or None, optional
         Human-readable report path. When omitted, the report is written next to
-        ``output_path`` with the suffix ``.log``.
+        ``output_path`` with the suffix ``.log``. All three outputs must identify
+        distinct files and must not alias any input, including geometry/topology.
     slit_geometry : PeriodicSlitGeometry or None, optional
         Explicit slit geometry. Supply this or ``slit_geometry_path``, but not
         both. When neither is supplied, the geometry is inferred from
@@ -127,6 +134,7 @@ class SlitFillConfig:
 
     guest_path: Path = Path("confout.gro")
     slit_path: Path = Path("msn_9_1.gro")
+    slit_topology_path: Path | None = None
     output_path: Path = Path("merged_guest_slit_ring_check.gro")
     log_path: Path | None = None
     slit_geometry: PeriodicSlitGeometry | None = None
@@ -329,9 +337,10 @@ class SlitFillReport:
         Number of guest bond segments checked against slit aromatic rings.
     slit_bond_template_count : int
         Number of unique slit residue bond templates used in the reverse
-        ring-crossing check.
+        ring-crossing check; zero when explicit topology supplies connectivity.
     slit_bond_count_checked : int
-        Number of slit bond segments checked against guest aromatic rings.
+        Number of slit bond segments checked against guest aromatic rings,
+        including inter-residue edges.
     density_estimate : DensityEstimate
         Full-box and padded-interval density metrics for retained target
         residues in the finalized output coordinates.
@@ -396,7 +405,7 @@ class SlitFillReport:
 
 
 def _resolve_fill_config(config: SlitFillConfig) -> SlitFillConfig:
-    """Return a fill configuration with a resolved log-file path.
+    """Resolve the log path and protect all scientific inputs and outputs.
 
     Parameters
     ----------
@@ -411,8 +420,8 @@ def _resolve_fill_config(config: SlitFillConfig) -> SlitFillConfig:
     Raises
     ------
     ValueError
-        Raised when the GRO, geometry YAML, and log destinations are not
-        distinct.
+        Raised when outputs alias one another or the guest, slit, or explicit
+        geometry/topology input, including canonical aliases, symlinks, and hard links.
     """
 
     resolved = (
@@ -425,8 +434,12 @@ def _resolve_fill_config(config: SlitFillConfig) -> SlitFillConfig:
         resolved.output_path.with_suffix(".yml"),
         resolved.log_path,
     )
-    if len(output_paths) != len(set(output_paths)):
-        raise ValueError("Fill GRO, geometry YAML, and log paths must be distinct.")
+    input_paths = [resolved.guest_path, resolved.slit_path]
+    if resolved.slit_geometry_path is not None:
+        input_paths.append(resolved.slit_geometry_path)
+    if resolved.slit_topology_path is not None:
+        input_paths.append(resolved.slit_topology_path)
+    validate_output_paths(output_paths, input_paths)
     return resolved
 
 
@@ -557,14 +570,30 @@ def _wrap_residues(
 
 
 def _build_output_axis_permutation(normal_axis_index: int) -> tuple[int, int, int]:
-    """Build the axis permutation that moves the slit normal onto ``z``."""
+    """Move the slit normal to z with a chirality-preserving cyclic permutation.
+
+    Parameters
+    ----------
+    normal_axis_index : int
+        Input normal axis: 0, 1, or 2.
+
+    Returns
+    -------
+    tuple[int, int, int]
+        Input axes in output order; the transformation has determinant +1.
+
+    Raises
+    ------
+    ValueError
+        If the supplied axis is unsupported.
+    """
 
     if normal_axis_index == 2:
         return (0, 1, 2)
     if normal_axis_index == 1:
-        return (0, 2, 1)
+        return (2, 0, 1)
     if normal_axis_index == 0:
-        return (2, 1, 0)
+        return (1, 2, 0)
     raise ValueError(f"Unsupported axis index {normal_axis_index}.")
 
 
@@ -691,7 +720,8 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
     Returns
     -------
     str
-        Newline-terminated report with explicit component roles and units.
+        Newline-terminated report with component roles, slit connectivity source,
+        and explicit units.
     """
 
     inputs = _format_value_lines(
@@ -699,6 +729,7 @@ def _build_fill_report_text(config: SlitFillConfig, report: SlitFillReport) -> s
         [
             ("Guest reservoir", str(config.guest_path)),
             ("Slit structure", str(config.slit_path)),
+            ("Slit bond source", str(config.slit_topology_path) if config.slit_topology_path else "periodic covalent-distance inference"),
             ("Merged output", str(config.output_path)),
             ("Report file", str(config.log_path)),
         ],
@@ -953,15 +984,23 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
     written to the geometry YAML. The GRO, geometry YAML, and log are promoted
     together after all three succeed.
     Positions, optional velocities, box lengths, and geometry are expressed in
-    the same output frame with the slit normal on ``z``. Translations and
+    the same output frame with the slit normal on ``z`` through a proper cyclic
+    rotation that preserves molecular chirality. Translations and
     whole-residue wrapping affect positions only. If either input contains
     velocities, missing velocities in the other input are written as zeros;
     otherwise velocity columns are omitted. Input arrays are not modified.
+    All output paths are checked against each other and every input before
+    parsing. Slit bonds come from the explicitly supplied full-slit ITP or
+    periodic distance inference within and across residue boundaries.
     """
 
     config = _resolve_fill_config(config)
     guest_system = _load_gro_system(config.guest_path)
     slit_system = _load_gro_system(config.slit_path)
+    slit_bonds = (
+        None if config.slit_topology_path is None
+        else load_slit_bonds(config.slit_topology_path, slit_system)
+    )
     _validate_slit_coordinates(slit_system)
     _validate_fill_config(config, guest_system, slit_system)
     framework_resnames = tuple(sorted(set(slit_system.residue_names)))
@@ -1008,6 +1047,7 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
         ring_plane_tolerance_nm=config.ring_plane_tolerance_nm,
         ring_polygon_padding_nm=config.ring_polygon_padding_nm,
         include_hydrogen_bonds_in_ring_check=config.include_hydrogen_bonds_in_ring_check,
+        slit_bonds=slit_bonds,
     )
     kept_guest_mask = _build_kept_guest_atom_mask(
         guest_system=guest_system,
@@ -1227,7 +1267,7 @@ def fill_slit(config: SlitFillConfig) -> SlitFillReport:
 
 
 def _build_fill_argument_parser() -> argparse.ArgumentParser:
-    """Return the CLI parser for the slit-fill command."""
+    """Return the slit-fill CLI parser, including optional full-slit ITP input."""
 
     parser = argparse.ArgumentParser(
         description=(
@@ -1248,6 +1288,14 @@ def _build_fill_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         default=SlitFillConfig.slit_path,
         help="GRO file containing the grafted silica slit. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--slit-topology",
+        type=Path,
+        default=None,
+        help=("Flat full-slit ITP matching the slit GRO atom order. Uses exact chemical "
+              "bonds for ring checks, including stretched bonds. Otherwise bonds are "
+              "inferred periodically within and between residues."),
     )
     parser.add_argument(
         "--output",
@@ -1381,7 +1429,7 @@ def _build_fill_argument_parser() -> argparse.ArgumentParser:
 
 
 def fill_slit_main(argv: Sequence[str] | None = None) -> SlitFillReport:
-    """Parse CLI arguments and run the slit-fill workflow.
+    """Parse CLI paths, optional exact connectivity, and run slit filling.
 
     Parameters
     ----------
@@ -1408,6 +1456,7 @@ def fill_slit_main(argv: Sequence[str] | None = None) -> SlitFillReport:
     config = SlitFillConfig(
         guest_path=args.guest,
         slit_path=args.slit,
+        slit_topology_path=args.slit_topology,
         output_path=args.output,
         log_path=args.log,
         slit_geometry_path=args.slit_geometry,

@@ -138,8 +138,8 @@ def _positions_clearance(
         normalized to ``float64``.
     reference : _StericAtomBatch or _StericGrid
         Full reference batch or periodic local-cell reference. Batch mode scans
-        all supplied reference atoms. Grid mode scans only each query cell and
-        its immediate wrapped neighbors.
+        all supplied reference atoms. Grid mode expands the periodic cell search
+        to cover the configured scale times the maximum participating radii sum.
     ignored_block_atoms : set[int]
         Scaffold identifiers excluded from the reference. Sentinel ``-1`` is
         treated like any other value during the existing prefilter step.
@@ -153,8 +153,10 @@ def _positions_clearance(
     Returns
     -------
     clearance : float
-        Minimum distance minus scaled summed radii, in nanometers. Return
-        ``inf`` for an empty candidate set or when no references remain.
+        Minimum distance minus scaled summed radii among searched references,
+        in nanometers. Grid mode includes every potential overlap but need not
+        return the global minimum positive clearance. Return ``inf`` when no
+        references are searched or the candidate set is empty.
 
     Notes
     -----
@@ -204,7 +206,10 @@ def _positions_clearance(
 
     min_clearance = float("inf")
     for cell_key, atom_indices in cell_groups.items():
-        batch = reference.neighbor_batch(positions[atom_indices[0]])
+        search_radius = steric_clearance_scale * (
+            float(np.max(radii[atom_indices])) + reference.maximum_radius_nm
+        )
+        batch = reference.neighbor_batch(positions[atom_indices[0]], search_radius)
         reference_positions, reference_radii, reference_block_atom_ids = (
             _filtered_steric_batch_arrays(
                 batch,

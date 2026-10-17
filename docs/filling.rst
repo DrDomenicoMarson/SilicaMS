@@ -16,6 +16,7 @@ For example, reuse geometry written by the construction workflow explicitly:
    silicams-fill-slit \
        --guest guest.gro \
        --slit functionalized.gro \
+       --slit-topology functionalized.itp \
        --slit-geometry functionalized.yml \
        --output filled.gro
 
@@ -54,6 +55,18 @@ residue names and counts. This provenance is descriptive; standalone analysis
 does not silently use it as a selector. Filling rejects a residue name present
 in both source files because that name would become ambiguous after merging.
 
+The optional ``--slit-topology`` CLI argument (``slit_topology_path`` in
+``SlitFillConfig``) supplies exact chemical bonds from a flat full-slit ITP.
+It must contain one molecule type matching the entire slit GRO's atom order,
+atom/residue names, and residue boundaries. Use the ITP for unminimized slits,
+whose stretched bonds cannot reliably be inferred from distances. Chemical
+bonds crossing residue or periodic boundaries are included; supplementary
+distance restraints do not create chemical edges. The reader accepts the
+sections emitted by SilicaMS and rejects preprocessor directives or unsupported
+sections. Without an explicit ITP, periodic covalent-distance inference includes
+both intra-residue and inter-residue bonds. No topology file is discovered
+automatically. The log records which connectivity source was used.
+
 Standalone analysis classifies every residue name explicitly.
 ``framework_resnames`` identifies the slit atoms used for probe exclusion;
 ``mobile_resnames`` identifies non-target mobile species; and
@@ -64,7 +77,9 @@ On the CLI, repeat ``--framework-resname`` or ``--mobile-resname`` as needed;
 supplying any framework options replaces the default set. Overlap,
 unclassified residue names, and an empty resolved framework are errors.
 
-The output slit normal is on ``z``. Coordinates, optional input velocities,
+The output slit normal is on ``z``. Proper cyclic permutations preserve
+chirality: x-normal inputs use ``(y, z, x)`` and y-normal inputs use
+``(z, x, y)``. Coordinates, optional input velocities,
 box lengths, and geometry use the same axis permutation. Centering and
 whole-residue wrapping affect positions only; input arrays are not modified.
 Velocity columns are omitted when neither input supplies velocities. If only
@@ -87,6 +102,9 @@ values; boolean and integer-valued float inputs are rejected.
 The merged GRO, output geometry YAML, and human-readable log are staged and
 promoted together. If a handled late failure occurs, existing outputs remain
 unchanged and a new partial set is not exposed.
+Before parsing, filling also rejects collisions among these three outputs and
+with either source GRO or explicit geometry/topology files, including canonical
+aliases, symlinks, and existing hard links.
 
 The signed ``surface_plane_padding_nm`` contracts the mean-plane interval when
 positive and expands it when negative. The resulting width must stay positive

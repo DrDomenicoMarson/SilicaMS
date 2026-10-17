@@ -135,6 +135,11 @@ can make an exact target slow or unrealizable. It should not be interpreted as
 a force-field nonbonded criterion, and every generated functionalized slit
 requires staged energy minimization before equilibration.
 
+The periodic steric grid expands its searched cell extent to cover the selected
+clearance scale multiplied by the largest participating covalent-radius sum.
+This covers all potential overlaps even when the cutoff exceeds the nominal
+0.25 nm cell width; positive clearance scores remain local search scores.
+
 Coordinate-only functionalized output does not require a ligand topology. A
 self-contained functionalized GROMACS topology additionally requires an
 explicit flat ligand ITP and, for geminal sites, explicit generated cross
@@ -147,6 +152,13 @@ molecule-local indices are independently unique, and every `[ bonds ]`,
 against the declared `[ atoms ]` indices before assembly. Repeated interaction
 sections remain supported within the single molecule definition, while a
 second molecule definition is rejected rather than merged implicitly.
+
+All supplied ligand interaction rows are preserved during assembly, including
+multiple bond or angle potentials on the same atoms and supplementary distance
+potentials outside the chemical graph. GROMACS bond functions 1--5, 7, and 8
+define chemical edges; non-chemical functions such as type 6 do not replace
+these edges. The supplied chemical graph must match the base ligand in the
+shared coordinate snapshot. Inconsistencies fail before output promotion.
 
 ### Atomic-mass convention
 
@@ -166,6 +178,10 @@ residue ordering, molecule membership, box dimensions, source identifiers,
 assembled bonds and angles, graft junctions, and residue counts. Structure and
 topology writers consume the same snapshot so numbering and connectivity stay
 consistent across formats.
+
+GRO serializes the same atom records used by the other writers, including
+sequential residue identifiers independent of original residue labels.
+Five-digit GRO atom and residue identifiers wrap modulo 100000.
 
 Bare exports must satisfy the silica charge and coordination identities.
 Functionalized topology exports additionally validate expected fragment
@@ -191,6 +207,17 @@ both faces; negative padding expands the interval, but the validated padded
 width must remain positive and cannot exceed the periodic box length along the
 slit normal.
 
+Slit connectivity includes residue junctions. If `slit_topology_path` is supplied,
+chemical edges come from the flat full-slit ITP after checking atom order,
+atom/residue names, and residue boundaries against the GRO. Repeated chemical
+terms yield one geometric segment, while non-chemical distance potentials
+(bond functions 6, 9, 10) do not create segments. Each segment is reconstructed
+with minimum-image endpoints. Without an explicit ITP, intra-residue templates
+are inferred as before and inter-residue bonds are found by a periodic neighbor
+search with `0.05 < distance <= 1.25 * (r_a + r_b)` nm. This geometric inference
+cannot identify arbitrary stretched bonds; use the ITP for unminimized slits.
+The log records the connectivity source; no neighboring topology is discovered.
+
 The merged GRO, geometry YAML, and report log are staged and promoted as one
 exception-safe output set. Filling also writes source-derived component
 provenance: residue names from the slit input are recorded as framework and
@@ -198,7 +225,13 @@ residue names from the guest reservoir as mobile. This metadata is descriptive
 and is not an implicit standalone-analysis selector. A residue name present in
 both inputs is rejected because it would become ambiguous after merging.
 
-Output axes are permuted to place the slit normal on z. The same permutation
+Before reading inputs, all three filling output paths are checked against one
+another and the guest/slit GRO and explicit geometry/topology inputs. Canonical
+aliases, symlinks, and existing hard links are treated as collisions.
+
+Output axes use a proper cyclic permutation to place the slit normal on z:
+`(y, z, x)` for x-normal input, `(z, x, y)` for y-normal input, and identity for
+z-normal input. Each has determinant +1 and preserves chirality. The same permutation
 is applied to slit and guest coordinates, their optional Cartesian velocities
 (nm/ps), box lengths, and geometry metadata. Center-crop translations and
 whole-residue periodic image shifts affect positions only, not velocities.

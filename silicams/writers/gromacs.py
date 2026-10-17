@@ -11,6 +11,7 @@ import silicams.database as db
 import silicams.utils as utils
 from silicams._output_transaction import staged_output_paths
 from silicams.topology import (
+    _CHEMICAL_BOND_FUNCTIONS,
     BareSilicaChargeContribution,
     BareSilicaChargeDiagnostics,
     FunctionalizedSlitChargeDiagnostics,
@@ -315,6 +316,9 @@ class GromacsTopologyWriter(StructureWriter):
         -----
         The ITP and TOP files are rendered before either final path is replaced,
         then promoted as one exception-safe output set.
+        Every supplied ligand interaction is mapped in full, including additive
+        bond/angle terms and non-chemical distance potentials. Chemical ligand
+        bonds must agree with the coordinate snapshot; mismatches are errors.
         """
         if self._snapshot.source_kind != "silica_slit":
             raise TypeError("Full slit topology output requires a silica-slit snapshot.")
@@ -367,6 +371,13 @@ class GromacsTopologyWriter(StructureWriter):
             record.serial: record
             for record in cache.atom_records
         }
+        internal_edges_by_molecule = {}
+        for bond in graph.bonds:
+            molecule_index = record_by_serial[bond.atom_a].molecule_index
+            if record_by_serial[bond.atom_b].molecule_index == molecule_index:
+                internal_edges_by_molecule.setdefault(molecule_index, set()).add(
+                    tuple(sorted((bond.atom_a, bond.atom_b)))
+                )
         attachment_record_by_molecule_index = {
             record.molecule_index: record
             for record in self._snapshot.attachments
@@ -463,10 +474,12 @@ class GromacsTopologyWriter(StructureWriter):
                         "ligand atom name "
                         f"{geminal_cross_terms.first_ligand_atom_name!r}."
                     )
-                if bundle.bond_by_names(
-                    mount_atom_name,
-                    geminal_cross_terms.first_ligand_atom_name,
-                ) is None:
+                if not any(
+                    bond.parameters.function in _CHEMICAL_BOND_FUNCTIONS
+                    for bond in bundle.bonds_by_names(
+                        mount_atom_name, geminal_cross_terms.first_ligand_atom_name,
+                    )
+                ):
                     raise ValueError(
                         "Silane geminal cross terms require "
                         f"{geminal_cross_terms.first_ligand_atom_name!r} to "
@@ -593,13 +606,12 @@ class GromacsTopologyWriter(StructureWriter):
                 and record_a.molecule_index == record_b.molecule_index
                 and record_a.residue_name in ligand_shorts
                 and record_b.residue_name in ligand_shorts
+                and bundle.has_atom_name(record_a.atom_name)
+                and bundle.has_atom_name(record_b.atom_name)
             ):
-                bundle_bond = bundle.bond_by_names(
-                    record_a.atom_name,
-                    record_b.atom_name,
-                )
-                if bundle_bond is not None:
-                    bond_parameters = bundle_bond.parameters
+                # Map the complete supplied interaction list below, without
+                # collapsing multiple potentials into a single graph edge.
+                continue
 
             if bond_parameters is None:
                 elements = sorted(
@@ -657,14 +669,9 @@ class GromacsTopologyWriter(StructureWriter):
                 and record_a.residue_name in ligand_shorts
                 and record_b.residue_name in ligand_shorts
                 and record_c.residue_name in ligand_shorts
+                and all(bundle.has_atom_name(record.atom_name) for record in (record_a, record_b, record_c))
             ):
-                bundle_angle = bundle.angle_by_names(
-                    record_a.atom_name,
-                    record_b.atom_name,
-                    record_c.atom_name,
-                )
-                if bundle_angle is not None:
-                    angle_parameters = bundle_angle.parameters
+                continue
 
             if angle_parameters is None:
                 center_element = db.get_element(record_b.atom_type)
@@ -816,6 +823,37 @@ class GromacsTopologyWriter(StructureWriter):
                         f"required by the supplied topology bundle: "
                         f"{missing_bundle_names}."
                     )
+
+                serial_by_index = {
+                    atom.index: serial_by_bundle_name[atom.atom_name]
+                    for atom in bundle.moleculetype.atoms
+                }
+                base_serials = set(serial_by_index.values())
+                expected_edges = {
+                    tuple(sorted((serial_by_index[b.atom_a], serial_by_index[b.atom_b])))
+                    for b in bundle.moleculetype.bonds
+                    if b.parameters.function in _CHEMICAL_BOND_FUNCTIONS
+                }
+                actual_edges = {
+                    (a, b) for a, b in internal_edges_by_molecule.get(molecule_index, ())
+                    if a in base_serials and b in base_serials
+                }
+                if expected_edges != actual_edges:
+                    raise ValueError(
+                        "Ligand chemical bonds disagree with the structure snapshot "
+                        f"for molecule {molecule_index}: missing from topology "
+                        f"{sorted(actual_edges - expected_edges)}, extra in topology "
+                        f"{sorted(expected_edges - actual_edges)}."
+                    )
+                bonds.extend(
+                    GromacsBond(serial_by_index[b.atom_a], serial_by_index[b.atom_b], b.parameters)
+                    for b in bundle.moleculetype.bonds
+                )
+                angles.extend(
+                    GromacsAngle(serial_by_index[a.atom_a], serial_by_index[a.atom_b],
+                                 serial_by_index[a.atom_c], a.parameters)
+                    for a in bundle.moleculetype.angles
+                )
 
                 for pair in bundle.moleculetype.pairs:
                     atom_name_a = bundle_atoms_by_index[pair.atom_a].atom_name

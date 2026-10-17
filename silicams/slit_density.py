@@ -20,7 +20,7 @@ from scipy.spatial import cKDTree
 import silicams.database as db
 from .database import _infer_element_from_atom_name
 from ._gro_io import _GroSystem, _build_residue_spans, _load_gro_system
-from ._output_transaction import staged_output_paths
+from ._output_transaction import paths_refer_to_same_file, staged_output_paths
 from ._slit_geometry_io import _resolve_slit_geometry
 from ._slit_report import _format_geometry_block, _format_value_lines
 from ._validation import finite_real, integral
@@ -447,37 +447,6 @@ def _resolve_component_resnames(
     return present_framework, tuple(sorted(present & mobile))
 
 
-def _paths_refer_to_same_file(first_path: Path, second_path: Path) -> bool:
-    """Return whether two paths name the same prospective or existing file.
-
-    Parameters
-    ----------
-    first_path : Path
-        First path to compare.
-    second_path : Path
-        Second path to compare.
-
-    Returns
-    -------
-    bool
-        ``True`` for canonical path aliases, symlinks, or existing hard links.
-
-    Notes
-    -----
-    Non-strict resolution detects lexical aliases even when the report does
-    not exist yet. ``Path.samefile`` additionally detects existing hard links.
-    """
-
-    first_resolved = first_path.expanduser().resolve(strict=False)
-    second_resolved = second_path.expanduser().resolve(strict=False)
-    if first_resolved == second_resolved:
-        return True
-    try:
-        return first_path.samefile(second_path)
-    except OSError:
-        return False
-
-
 def _resolve_density_config(config: SlitDensityConfig) -> SlitDensityConfig:
     """Resolve the report path and reject aliases with density input files.
 
@@ -513,7 +482,7 @@ def _resolve_density_config(config: SlitDensityConfig) -> SlitDensityConfig:
     if resolved.slit_geometry_path is not None:
         protected_inputs.append(("slit-geometry input", resolved.slit_geometry_path))
     for input_label, input_path in protected_inputs:
-        if _paths_refer_to_same_file(resolved.log_path, input_path):
+        if paths_refer_to_same_file(resolved.log_path, input_path):
             raise ValueError(
                 f"Density report path {resolved.log_path} must differ from the "
                 f"{input_label} path {input_path}."

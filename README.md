@@ -117,6 +117,12 @@ blocks, are concatenated within that single molecule definition. Multiple
 molecule definitions and ambiguous or dangling indices are rejected before
 topology assembly.
 
+Full export preserves every supplied ligand interaction, including additive
+bond/angle terms on the same atoms and non-chemical distance potentials outside
+the bond graph. The ligand's chemical bonds must match the coordinate snapshot;
+a mismatch is rejected. Name-based queries use `bonds_by_names(...)` and
+`angles_by_names(...)` and return all matching terms as tuples.
+
 The default silica topology uses the conventional elemental hydrogen mass of
 `1.00800 Da` for silanol and geminal hydroxyl hydrogens. SilicaMS does not
 silently apply hydrogen-mass repartitioning. If a larger timestep requires
@@ -144,6 +150,9 @@ values; values of `0.90` or above can make dense exact targets very slow or
 impossible to realize. These observations are system-specific, not universal
 physical thresholds. The selected settings are stored in the preparation
 report.
+
+The graft steric search expands its periodic cell neighborhood using the selected
+clearance scale and atom radii, including for scales above 1.0.
 
 For filling, `SlitFillConfig.general_cutoff_nm=0.10` is likewise permissive.
 Values of `0.15` and `0.20` nm are useful stricter starting points, with the
@@ -174,6 +183,8 @@ counts, but standalone density selection remains explicit.
 
 Filling puts the slit normal on the output z axis, applying the same axis
 permutation to coordinates, any input velocities, box lengths, and geometry.
+This is a proper cyclic rotation that preserves molecular chirality: x-normal
+inputs use `(y, z, x)` and y-normal inputs use `(z, x, y)`.
 Centering and whole-residue wrapping change positions only. Velocity columns
 are omitted when neither input contains velocities; when only one does, the
 other input's velocities are written as zeros.
@@ -191,6 +202,24 @@ density calculations and the target-specific summary fields; the structured
 report also includes per-residue-name filtering counts for the complete
 mixture. Monatomic and non-aromatic residues skip only the bond or ring check
 that is physically inapplicable.
+
+Slit ring screening includes periodic bonds across residue boundaries, including
+framework Si--O and graft junctions. For exact connectivity, especially in
+unminimized structures with stretched bonds, supply the full-slit ITP using
+`SlitFillConfig(slit_topology_path=Path("slit.itp"), ...)` or
+`--slit-topology slit.itp`. It must be a flat, single-molecule ITP whose atom
+order, atom/residue names, and residue boundaries match the entire slit GRO.
+Only chemical bond functions contribute to the crossing screen; distance
+restraints do not create chemical edges. Without this explicit file, bonds are
+inferred from covalent radii within and between residues under periodic
+boundaries. Distance inference cannot recover arbitrary stretched bonds. No
+neighboring topology is selected automatically. The filling log records the
+bond source.
+
+Filling rejects collisions among its GRO, YAML, and log destinations and with
+the guest GRO, slit GRO, or explicitly supplied geometry/topology inputs.
+Canonical aliases, symbolic links, and existing hard links are checked before
+any input is parsed or output is staged.
 
 Standalone density analysis classifies components with exact residue-name
 selectors. `framework_resnames` lists atoms that exclude probe volume;
@@ -251,6 +280,10 @@ snapshot, and share it between:
   and structural object output.
 - `GromacsTopologyWriter` for charge diagnostics and slit ITP/TOP output.
 - `AntechamberWriter` for standalone molecule helper inputs.
+
+GRO uses the same atom records and sequential residue numbering as the other
+structure/topology writers, regardless of input residue labels. GRO atom and
+residue identifiers wrap modulo 100000 to fit its five-character fields.
 
 Object output is opt-in. SilicaMS object files contain the `silicams` module
 namespace; object files serialized by PoreMS are intentionally unsupported.

@@ -1,8 +1,8 @@
 """Private construction steric batches and periodic local candidate indexing.
 
 These containers store supplied coordinates and covalent radii in nanometers.
-The grid selects the query cell and its immediate wrapped neighbors; it does
-not calculate clearances or guarantee a global nearest-atom search. Chemistry,
+The grid selects cells within a caller-supplied search radius; it does not
+calculate clearances or guarantee a global nearest-atom search. Chemistry,
 radius lookup, contact thresholds, and attachment decisions belong to the
 calling engine.
 """
@@ -10,6 +10,8 @@ calling engine.
 from dataclasses import dataclass, field
 
 import numpy as np
+import math
+from itertools import product
 
 
 __all__: list[str] = []
@@ -215,6 +217,9 @@ class _StericGrid:
     dims : tuple[int, int, int]
         Cell counts derived during initialization as
         ``max(1, int(box_length / cell_size_nm))``. Not a dataclass/constructor field.
+    maximum_radius_nm : float
+        Conservative upper bound on radii in the grid, updated on insertion.
+        Removing atoms may retain an overestimate until the grid is rebuilt.
 
     Notes
     -----
@@ -228,14 +233,16 @@ class _StericGrid:
     cell_size_nm: float = _STERIC_GRID_CELL_SIZE_NM
     cells: dict[tuple[int, int, int], _StericAtomBatch] = field(default_factory=dict)
     block_cells: dict[int, tuple[int, int, int]] = field(default_factory=dict)
+    maximum_radius_nm: float = field(init=False, default=0.0)
 
     def __post_init__(self):
-        """Derive cell counts without copying or rebuilding supplied mappings.
+        """Derive cell counts and a radius bound from the supplied mappings.
 
         Returns
         -------
         None
-            Set ``dims`` on this grid, keeping at least one cell per dimension.
+            Set ``dims`` with at least one cell per dimension and initialize
+            ``maximum_radius_nm`` from existing cell contents.
 
         Raises
         ------
@@ -247,6 +254,10 @@ class _StericGrid:
         self.dims = tuple(
             max(1, int(length / self.cell_size_nm))
             for length in self.box
+        )
+        self.maximum_radius_nm = max(
+            (float(np.max(batch.radii)) for batch in self.cells.values() if batch.radii.size),
+            default=0.0,
         )
 
     def _wrap_component(self, value, dim):
@@ -292,7 +303,7 @@ class _StericGrid:
         return tuple(key)
 
     def add_block_atom(self, atom_id, position, radius):
-        """Add one live scaffold atom to the steric grid.
+        """Add one live scaffold atom and update the grid's radius upper bound.
 
         Parameters
         ----------
@@ -316,6 +327,7 @@ class _StericGrid:
             np.asarray([atom_id], dtype=int),
         )
         self.block_cells[atom_id] = key
+        self.maximum_radius_nm = max(self.maximum_radius_nm, float(radius))
 
     def add_block_atoms(self, atom_ids, positions, radii):
         """Add several live scaffold atoms to the steric grid.
@@ -350,7 +362,7 @@ class _StericGrid:
             self.add_block_atom(int(atom_id), position, float(radius))
 
     def add_attached_atoms(self, positions, radii):
-        """Add several already attached ligand atoms to the steric grid.
+        """Add attached ligand atoms and update the grid's radius upper bound.
 
         Parameters
         ----------
@@ -376,6 +388,7 @@ class _StericGrid:
         radii = np.asarray(radii, dtype=float).reshape(-1)
 
         for position, radius in zip(positions, radii):
+            self.maximum_radius_nm = max(self.maximum_radius_nm, float(radius))
             key = self._cell_key(position)
             self.cells.setdefault(key, _StericAtomBatch.empty()).append(
                 np.asarray([position], dtype=float),
@@ -407,22 +420,28 @@ class _StericGrid:
             if self.cells[key].radii.size == 0:
                 del self.cells[key]
 
-    def neighbor_batch(self, position):
-        """Return steric atoms from the local neighboring cells.
+    def neighbor_batch(self, position, radius_nm):
+        """Return cells covering a periodic distance cutoff around a position.
 
         Parameters
         ----------
         position : array-like
             Cartesian query position of shape ``(3,)`` in nanometers.
+        radius_nm : float
+            Finite non-negative search radius in nanometers. The cell extent
+            expands to cover this radius, capped at one visit per periodic cell.
 
         Returns
         -------
         batch : _StericAtomBatch
-            New arrays containing atoms from the query cell and its 26 wrapped
-            neighbors, omitting absent/empty cells. Visit offsets ``-1, 0, 1``
-            with x outermost and z innermost, taking each wrapped cell only on
-            its first encounter. Preserve atom order within cells. Dimensions
-            of one or two cells do not duplicate atoms in the result.
+            New arrays containing all potentially overlapping cells, with x
+            outermost and z innermost. Preserve atom order within cells; no
+            periodic cell is visited more than once.
+
+        Raises
+        ------
+        ValueError
+            If the radius is non-finite or negative.
 
         Notes
         -----
@@ -430,21 +449,19 @@ class _StericGrid:
         retain their stored values, not wrapped images relative to the query.
         """
         center = self._cell_key(position)
-        seen_keys = set()
+        if not math.isfinite(radius_nm) or radius_nm < 0:
+            raise ValueError("Steric search radius must be finite and non-negative.")
+        steps = max(1, math.ceil(radius_nm / self.cell_size_nm))
+        axis_keys = []
+        for coordinate, size in zip(center, self.dims):
+            extent = min(steps, size // 2)
+            axis_keys.append(tuple(dict.fromkeys(
+                (coordinate + offset) % size for offset in range(-extent, extent + 1)
+            )))
         batches = []
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    key = (
-                        (center[0] + dx) % self.dims[0],
-                        (center[1] + dy) % self.dims[1],
-                        (center[2] + dz) % self.dims[2],
-                    )
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    batch = self.cells.get(key)
-                    if batch is not None and batch.radii.size > 0:
-                        batches.append(batch)
+        for key in product(*axis_keys):
+            batch = self.cells.get(key)
+            if batch is not None and batch.radii.size > 0:
+                batches.append(batch)
 
         return _StericAtomBatch.concatenate(batches)

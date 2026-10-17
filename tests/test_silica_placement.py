@@ -467,8 +467,8 @@ def test_prefilter_and_kernel_keep_distinct_sentinel_exclusion_behavior():
     assert kernel_result == pytest.approx(-0.15)
 
 
-def test_local_grid_and_full_reference_modes_intentionally_differ():
-    """Do not broaden fixed local neighborhoods into a global search."""
+def test_grid_expands_to_find_overlapping_large_radius_references():
+    """Find overlaps outside adjacent cells when reference radii require it."""
     grid = _StericGrid((1, 1, 1))
     grid.add_block_atoms(
         [7, 8],
@@ -482,8 +482,25 @@ def test_local_grid_and_full_reference_modes_intentionally_differ():
     full_result = _positions_clearance(
         [[0, 0, 0]], [0.05], full, set(), 1.0, [1, 1, 1],
     )
-    assert local_result == pytest.approx(0.0, abs=1e-15)
+    assert local_result == pytest.approx(full_result)
     assert full_result == pytest.approx(-0.55)
+
+
+@pytest.mark.parametrize("shift", (0., 1.5))
+def test_scaled_grid_clearance_and_pose_rejection_match_full_scan(shift):
+    """Reject the audited Si/Si overlap, also when the bond crosses the box face."""
+    positions = np.array([[.249 + shift, 1., 1.]]) % 2.
+    reference_positions = np.array([[.510 + shift, 1., 1.]]) % 2.
+    radii = np.array([.111])
+    grid = _StericGrid((2., 2., 2.))
+    grid.add_block_atoms([17], reference_positions, radii)
+    full = _StericAtomBatch(reference_positions, radii, np.array([17]))
+    for reference in (grid, full):
+        assert _positions_clearance(positions, radii, reference, set(), 1.5, [2, 2, 2]) == pytest.approx(-.072)
+        assert _best_pose_positions(
+            positions, [0], radii, positions[0], [0, 0, 1], [0.],
+            reference, set(), 1.5, [2, 2, 2],
+        ) is None
 
 
 def test_local_grid_groups_cells_and_filters_scaffold_ids():

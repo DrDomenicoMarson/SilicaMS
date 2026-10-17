@@ -13,6 +13,8 @@ import yaml
 
 
 _STANDARD_HYDROGEN_MASS_DA = "1.00800"
+# GROMACS interactions that define chemical connectivity and exclusions.
+_CHEMICAL_BOND_FUNCTIONS = frozenset({1, 2, 3, 4, 5, 7, 8})
 _STANDARD_HYDROGEN_MASS_ORIGIN = (
     "doi:10.1021/cm500365c; mass: ciaaw.org/abridged-atomic-weights"
 )
@@ -1069,6 +1071,8 @@ class ParsedTopologyBundle:
     -----
     Atom names and indices must each be unique. Every bond, pair, angle, and
     dihedral index must reference an atom declared by ``moleculetype``.
+    Multiple interactions on the same atom pair or triplet are retained in
+    source order, including in the plural name-based lookups.
     """
 
     source_path: str
@@ -1076,11 +1080,11 @@ class ParsedTopologyBundle:
     moleculetype: GromacsMoleculeType
     atom_index_by_name: dict[str, int] = field(init=False, repr=False)
     atom_by_index: dict[int, GromacsAtom] = field(init=False, repr=False)
-    bond_lookup: dict[tuple[str, str], GromacsBond] = field(init=False, repr=False)
-    angle_lookup: dict[tuple[str, str, str], GromacsAngle] = field(init=False, repr=False)
+    bond_lookup: dict[tuple[str, str], tuple[GromacsBond, ...]] = field(init=False, repr=False)
+    angle_lookup: dict[tuple[str, str, str], tuple[GromacsAngle, ...]] = field(init=False, repr=False)
 
     def __post_init__(self):
-        """Validate one molecule and build its unambiguous lookup tables.
+        """Validate one molecule and build lookups retaining every interaction.
 
         Raises
         ------
@@ -1151,8 +1155,8 @@ class ParsedTopologyBundle:
         for bond in self.moleculetype.bonds:
             name_a = atom_by_index[bond.atom_a].atom_name
             name_b = atom_by_index[bond.atom_b].atom_name
-            bond_lookup[tuple(sorted((name_a, name_b)))] = bond
-        object.__setattr__(self, "bond_lookup", bond_lookup)
+            bond_lookup.setdefault(tuple(sorted((name_a, name_b))), []).append(bond)
+        object.__setattr__(self, "bond_lookup", {key: tuple(rows) for key, rows in bond_lookup.items()})
 
         angle_lookup = {}
         for angle in self.moleculetype.angles:
@@ -1164,8 +1168,8 @@ class ParsedTopologyBundle:
                 name_b,
                 name_c if name_a <= name_c else name_a,
             )
-            angle_lookup[key] = angle
-        object.__setattr__(self, "angle_lookup", angle_lookup)
+            angle_lookup.setdefault(key, []).append(angle)
+        object.__setattr__(self, "angle_lookup", {key: tuple(rows) for key, rows in angle_lookup.items()})
 
     def atom_by_name(self, atom_name):
         """Return one parsed atom row by atom name.
@@ -1214,8 +1218,8 @@ class ParsedTopologyBundle:
         """
         return sum(float(atom.charge) for atom in self.moleculetype.atoms)
 
-    def bond_by_names(self, atom_name_a, atom_name_b):
-        """Return one bond definition by atom names.
+    def bonds_by_names(self, atom_name_a: str, atom_name_b: str) -> tuple[GromacsBond, ...]:
+        """Return all bond interactions for an unordered pair of atom names.
 
         Parameters
         ----------
@@ -1226,13 +1230,13 @@ class ParsedTopologyBundle:
 
         Returns
         -------
-        bond : GromacsBond or None
-            Matching bond row when present.
+        bonds : tuple[GromacsBond, ...]
+            Matching rows in source order, or an empty tuple.
         """
-        return self.bond_lookup.get(tuple(sorted((atom_name_a, atom_name_b))))
+        return self.bond_lookup.get(tuple(sorted((atom_name_a, atom_name_b))), ())
 
-    def angle_by_names(self, atom_name_a, atom_name_b, atom_name_c):
-        """Return one angle definition by atom names.
+    def angles_by_names(self, atom_name_a: str, atom_name_b: str, atom_name_c: str) -> tuple[GromacsAngle, ...]:
+        """Return all angle interactions, treating the outer names as unordered.
 
         Parameters
         ----------
@@ -1245,15 +1249,15 @@ class ParsedTopologyBundle:
 
         Returns
         -------
-        angle : GromacsAngle or None
-            Matching angle row when present.
+        angles : tuple[GromacsAngle, ...]
+            Matching rows in source order, or an empty tuple.
         """
         key = (
             atom_name_a if atom_name_a <= atom_name_c else atom_name_c,
             atom_name_b,
             atom_name_c if atom_name_a <= atom_name_c else atom_name_a,
         )
-        return self.angle_lookup.get(key)
+        return self.angle_lookup.get(key, ())
 
 
 def _strip_comment(line):
